@@ -112,8 +112,8 @@ export default {
     if (!interaction) return new Response('Invalid signature', { status: 401 });
     try {
       if (interaction.type === 1) return reply({ type: 1 });
-      if (interaction.type === 2) return command(interaction, env, ctx);
-      if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return vote(interaction, env);
+      if (interaction.type === 2) return await command(interaction, env, ctx);
+      if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env);
       return ephemeral('Interacción desconocida.');
     } catch (error) {
       console.error('Interaction failed', error);

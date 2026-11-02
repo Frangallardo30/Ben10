@@ -1,4 +1,4 @@
-name = "ben10bot"
+name = "ben10"
 main = "src/index.js"
 compatibility_date = "2025-06-01"
 

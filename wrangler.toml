@@ -8,4 +8,4 @@ crons = ["*/5 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "ben10bot"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f20057f9-2d80-4cb0-94dd-f2a2317036d3"

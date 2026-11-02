@@ -4,6 +4,8 @@ Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Wor
 
 Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
 
+El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md). Cada tarea usa la [plantilla](docs/tasks/TEMPLATE.md) compartida con FrangaFlix.
+
 ## Cómo funciona
 
 - `/aura usuario:@Fran puntos:-100 motivo:Perdió una partida` publica una propuesta con botones 👍 **Aprobar** y 👎 **Desaprobar**. También podés postular tu propia aura.

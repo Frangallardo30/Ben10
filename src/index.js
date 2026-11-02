@@ -51,22 +51,28 @@ function profileIdentity(interaction, userId) {
 
 async function counts(db, id) {
   const rows = await db.prepare('SELECT choice, COUNT(*) AS n FROM votes WHERE proposal_id = ? GROUP BY choice').bind(id).all();
-  const values = { yes: 0, no: 0 };
+  const roleRows = await db.prepare('SELECT choice, COUNT(*) AS n FROM role_votes WHERE proposal_id = ? GROUP BY choice').bind(id).all();
+  const values = { yes: 0, no: 0, roleYes: 0, roleNo: 0 };
   for (const row of rows.results) values[row.choice] = row.n;
+  for (const row of roleRows.results) values[row.choice === 'yes' ? 'roleYes' : 'roleNo'] = row.n;
   return values;
 }
 
 function display(proposal, votes) {
   const closed = proposal.status !== 'open';
-  const result = closed ? (proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada') : 'Abierta hasta alcanzar 4 votos iguales';
+  const result = closed ? (proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada') : 'Abierta hasta que 4 del rol voten igual';
   return {
     allowed_mentions: { parse: [] },
     embeds: [{
       title: `Propuesta de aura: ${label(proposal.amount)}`,
-      description: `<@${proposal.target_id}>: ${proposal.reason}\n\n🗳️ Votan miembros de <@&${AURA_VOTER_ROLE_ID}>.`,
+      description: `<@${proposal.target_id}>: ${proposal.reason}\n\n🗳️ Todos pueden votar. El rol <@&${AURA_VOTER_ROLE_ID}> puede cerrar la votación.`,
       color: closed ? (proposal.status === 'approved' ? 0x21a675 : 0xc84a4a) : 0x5785f2,
-      fields: [{ name: 'Votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true }, { name: 'Estado', value: result, inline: true }],
-      footer: { text: 'Solo vota el rol habilitado. Quien propone y quien recibe no votan.' }
+      fields: [
+        { name: 'Todos los votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true },
+        { name: 'Votos del rol', value: `👍 ${votes.roleYes}/4 · 👎 ${votes.roleNo}/4`, inline: true },
+        { name: 'Estado', value: result, inline: false }
+      ],
+      footer: { text: 'Una persona, un voto. Quien propone y quien recibe no votan.' }
     }],
     components: closed ? [] : [{ type: 1, components: [
       { type: 2, style: 3, label: 'Aprobar', emoji: { name: '👍' }, custom_id: `aura:yes:${proposal.id}` },
@@ -93,9 +99,10 @@ async function ensureCommandsRegistered(env) {
 
 async function ensureVotingPolicy(db) {
   await db.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+  await db.prepare("CREATE TABLE IF NOT EXISTS role_votes (proposal_id TEXT NOT NULL, user_id TEXT NOT NULL, choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')), PRIMARY KEY(proposal_id, user_id))").run();
   await db.batch([
-    db.prepare("DELETE FROM votes WHERE proposal_id IN (SELECT id FROM proposals WHERE status = 'open') AND NOT EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),
-    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('voting_policy', 'role4-v1')")
+    db.prepare("INSERT OR IGNORE INTO role_votes(proposal_id, user_id, choice) SELECT v.proposal_id, v.user_id, v.choice FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.status = 'open' AND EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),
+    db.prepare("INSERT INTO bot_settings(key, value) VALUES ('voting_policy', 'all-votes-role4-v2') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
   ]);
 }
 
@@ -156,7 +163,7 @@ async function command(interaction, env, ctx) {
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
   const proposal = { id: crypto.randomUUID(), guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + 86400, status: 'open' };
   await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
-  return reply({ type: 4, data: display(proposal, { yes: 0, no: 0 }) });
+  return reply({ type: 4, data: display(proposal, { yes: 0, no: 0, roleYes: 0, roleNo: 0 }) });
 }
 
 async function vote(interaction, env) {
@@ -168,10 +175,14 @@ async function vote(interaction, env) {
   if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
   const user = actor(interaction);
   if (user === proposal.target_id || user === proposal.proposer_id) return ephemeral('Quien propone y quien recibe no pueden votar.');
-  if (!interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID)) return ephemeral('Solo pueden votar los miembros con el rol habilitado.');
+  const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
+  const roleVote = hasRole
+    ? env.DB.prepare("INSERT INTO role_votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id)
+    : env.DB.prepare('DELETE FROM role_votes WHERE proposal_id = ? AND user_id = ?').bind(id, user);
   await env.DB.batch([
     env.DB.prepare("INSERT INTO votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id),
-    env.DB.prepare("UPDATE proposals SET status = CASE WHEN (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'yes') >= ? THEN 'approved' WHEN (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'no') >= ? THEN 'rejected' ELSE status END WHERE id = ? AND status = 'open'").bind(id, VOTES_TO_CLOSE, id, VOTES_TO_CLOSE, id)
+    roleVote,
+    env.DB.prepare("UPDATE proposals SET status = CASE WHEN (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'yes') >= ? THEN 'approved' WHEN (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'no') >= ? THEN 'rejected' ELSE status END WHERE id = ? AND status = 'open'").bind(id, VOTES_TO_CLOSE, id, VOTES_TO_CLOSE, id)
   ]);
   const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
   return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });

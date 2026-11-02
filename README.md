@@ -5,8 +5,8 @@ Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Wor
 ## Cómo funciona
 
 - `/aura usuario:@Fran puntos:-100 motivo:Perdió una partida` publica una propuesta con botones 👍 **Aprobar** y 👎 **Desaprobar**. También podés postular tu propia aura.
-- Solo cuentan los votos de miembros con el rol de Discord `1431791263547392121`. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
-- La votación se cierra en cuanto llega a cuatro votos positivos o cuatro negativos. Cuatro positivos aprueban el cambio de aura; cuatro negativos lo rechazan. No hay cierre automático por tiempo.
+- Todos pueden votar y sus votos aparecen en el recuento. Los votos de miembros con el rol `1431791263547392121` también aparecen en un recuento separado. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
+- La votación se cierra en cuanto **cuatro miembros del rol** votan positivo o cuatro votan negativo. Esos cuatro votos del rol deciden si se aprueba o rechaza el cambio; los demás votos siguen visibles en el total. No hay cierre automático por tiempo.
 - `/perfil usuario:@Fran` muestra el total de aura y los últimos cinco cambios aprobados. Sin usuario, muestra tu perfil.
 - `/historial usuario:@Fran pagina:1` muestra todos los cambios aprobados, con puntos, motivos, fecha y quién los propuso. Hay ocho movimientos por página; sin usuario, muestra tu historial.
 
@@ -35,8 +35,8 @@ El endpoint no necesita que mantengas una computadora encendida. Los secretos se
 7. Registrá los comandos desde tu terminal con el token en una variable privada: `DISCORD_BOT_TOKEN=... npm run register`. No guardes ese comando con el valor real en archivos ni en el historial del shell.
 8. Invitá el bot al servidor con [esta URL](https://discord.com/oauth2/authorize?client_id=1417570023370653836&scope=bot%20applications.commands&permissions=1024).
 
-Para probar, usá `/aura` en un canal de texto y votá con cuatro miembros que tengan el rol indicado. `/perfil` se actualiza cuando se alcanzan cuatro votos positivos. El Worker responde solo a solicitudes firmadas por Discord.
-Al activar estas reglas, se borran los votos de propuestas que todavía estén abiertas para que votos previos de personas sin el rol no influyan en el resultado. Si había una votación en curso, conviene crearla de nuevo.
+Para probar, usá `/aura` en un canal de texto y votá con miembros del rol y sin él. `/perfil` se actualiza cuando cuatro miembros del rol votan positivo. El Worker responde solo a solicitudes firmadas por Discord.
+Los votos de propuestas abiertas bajo la regla anterior se conservan; sus votos del rol se trasladan al recuento especial.
 
 ## Datos
 

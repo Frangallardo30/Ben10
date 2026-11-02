@@ -1,6 +1,8 @@
 import { commands } from './commands.js';
 
 const DISCORD = 'https://discord.com/api/v10';
+const AURA_VOTER_ROLE_ID = '1431791263547392121';
+const VOTES_TO_CLOSE = 4;
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 const ephemeral = (content) => reply({ type: 4, data: { content, flags: 64 } });
 const bytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (x) => parseInt(x, 16));
@@ -56,14 +58,15 @@ async function counts(db, id) {
 
 function display(proposal, votes) {
   const closed = proposal.status !== 'open';
-  const result = closed ? (proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada') : `Votación abierta hasta <t:${proposal.expires_at}:R>`;
+  const result = closed ? (proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada') : 'Abierta hasta alcanzar 4 votos iguales';
   return {
+    allowed_mentions: { parse: [] },
     embeds: [{
       title: `Propuesta de aura: ${label(proposal.amount)}`,
-      description: `<@${proposal.target_id}>: ${proposal.reason}`,
+      description: `<@${proposal.target_id}>: ${proposal.reason}\n\n🗳️ Votan miembros de <@&${AURA_VOTER_ROLE_ID}>.`,
       color: closed ? (proposal.status === 'approved' ? 0x21a675 : 0xc84a4a) : 0x5785f2,
       fields: [{ name: 'Votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true }, { name: 'Estado', value: result, inline: true }],
-      footer: { text: 'Una persona, un voto. No votan quien propone ni quien recibe.' }
+      footer: { text: 'Solo vota el rol habilitado. Quien propone y quien recibe no votan.' }
     }],
     components: closed ? [] : [{ type: 1, components: [
       { type: 2, style: 3, label: 'Aprobar', emoji: { name: '👍' }, custom_id: `aura:yes:${proposal.id}` },
@@ -88,31 +91,17 @@ async function ensureCommandsRegistered(env) {
   console.log('Discord commands registered');
 }
 
-async function rememberMessage(env, interaction, id) {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const response = await fetch(`${DISCORD}/webhooks/${env.DISCORD_APPLICATION_ID}/${interaction.token}/messages/@original`);
-    if (response.ok) {
-      const message = await response.json();
-      await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ?').bind(message.id, id).run();
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-}
-
-async function finish(env, proposal) {
-  if (proposal.status !== 'open' || proposal.expires_at > Math.floor(Date.now() / 1000)) return proposal;
-  const votes = await counts(env.DB, proposal.id);
-  const status = votes.yes > votes.no ? 'approved' : 'rejected';
-  const update = await env.DB.prepare("UPDATE proposals SET status = ? WHERE id = ? AND status = 'open'").bind(status, proposal.id).run();
-  if (update.meta.changes === 0) return env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(proposal.id).first();
-  proposal.status = status;
-  if (proposal.message_id) await discord(env, `/channels/${proposal.channel_id}/messages/${proposal.message_id}`, 'PATCH', display(proposal, votes));
-  return proposal;
+async function ensureVotingPolicy(db) {
+  await db.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+  await db.batch([
+    db.prepare("DELETE FROM votes WHERE proposal_id IN (SELECT id FROM proposals WHERE status = 'open') AND NOT EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),
+    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('voting_policy', 'role4-v1')")
+  ]);
 }
 
 async function command(interaction, env, ctx) {
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+  await ensureVotingPolicy(env.DB);
   if (interaction.data.name === 'historial') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const page = option(interaction, 'pagina') ?? 1;
@@ -124,7 +113,7 @@ async function command(interaction, env, ctx) {
     const identity = profileIdentity(interaction, user);
     const entries = history.results.map((item) => {
       const reason = item.reason.replace(/\s+/g, ' ').trim();
-      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.expires_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.expires_at - 86400}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
     });
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
@@ -140,7 +129,7 @@ async function command(interaction, env, ctx) {
   if (interaction.data.name === 'perfil') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
-    const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open' AND expires_at > ?").bind(interaction.guild_id, user, Math.floor(Date.now() / 1000)).first();
+    const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open'").bind(interaction.guild_id, user).first();
     const history = await env.DB.prepare("SELECT amount, reason FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY expires_at DESC LIMIT 5").bind(interaction.guild_id, user).all();
     const identity = profileIdentity(interaction, user);
     const lines = history.results.map((item) => `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
@@ -164,25 +153,28 @@ async function command(interaction, env, ctx) {
   const target = option(interaction, 'usuario');
   const amount = option(interaction, 'puntos');
   const reason = String(option(interaction, 'motivo') ?? '').trim();
-  if (target === actor(interaction)) return ephemeral('No podés proponer aura para vos mismo.');
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
   const proposal = { id: crypto.randomUUID(), guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + 86400, status: 'open' };
   await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
-  ctx.waitUntil(rememberMessage(env, interaction, proposal.id));
   return reply({ type: 4, data: display(proposal, { yes: 0, no: 0 }) });
 }
 
 async function vote(interaction, env) {
+  await ensureVotingPolicy(env.DB);
   const [, choice, id] = interaction.data.custom_id.split(':');
   if (!['yes', 'no'].includes(choice)) return ephemeral('Voto inválido.');
   const proposal = await env.DB.prepare('SELECT * FROM proposals WHERE id = ? AND guild_id = ?').bind(id, interaction.guild_id).first();
   if (!proposal) return ephemeral('Propuesta inexistente.');
-  if (proposal.expires_at <= Math.floor(Date.now() / 1000)) { await finish(env, proposal); return ephemeral('La votación ya cerró.'); }
   if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
   const user = actor(interaction);
   if (user === proposal.target_id || user === proposal.proposer_id) return ephemeral('Quien propone y quien recibe no pueden votar.');
-  await env.DB.prepare('INSERT INTO votes(proposal_id, user_id, choice) VALUES (?, ?, ?) ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice').bind(id, user, choice).run();
-  return reply({ type: 7, data: display(proposal, await counts(env.DB, id)) });
+  if (!interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID)) return ephemeral('Solo pueden votar los miembros con el rol habilitado.');
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id),
+    env.DB.prepare("UPDATE proposals SET status = CASE WHEN (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'yes') >= ? THEN 'approved' WHEN (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'no') >= ? THEN 'rejected' ELSE status END WHERE id = ? AND status = 'open'").bind(id, VOTES_TO_CLOSE, id, VOTES_TO_CLOSE, id)
+  ]);
+  const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
+  return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });
 }
 
 export default {
@@ -218,7 +210,5 @@ export default {
   },
   async scheduled(_event, env) {
     try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
-    const due = await env.DB.prepare("SELECT * FROM proposals WHERE status = 'open' AND expires_at <= ? LIMIT 100").bind(Math.floor(Date.now() / 1000)).all();
-    for (const proposal of due.results) await finish(env, proposal);
   }
 };

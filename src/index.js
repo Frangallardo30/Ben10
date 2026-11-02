@@ -1,3 +1,5 @@
+import { commands } from './commands.js';
+
 const DISCORD = 'https://discord.com/api/v10';
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 const ephemeral = (content) => reply({ type: 4, data: { content, flags: 64 } });
@@ -59,6 +61,18 @@ function display(proposal, votes) {
 
 async function discord(env, path, method, body) {
   return fetch(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+}
+
+async function ensureCommandsRegistered(env) {
+  if (!env.DISCORD_BOT_TOKEN) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+  const version = 'aura-profile-v1';
+  const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
+  if (saved?.value === version) return;
+  const response = await discord(env, `/applications/${env.DISCORD_APPLICATION_ID}/commands`, 'PUT', commands);
+  if (!response.ok) throw new Error(`Discord command registration failed: ${response.status}`);
+  await env.DB.prepare("INSERT INTO bot_settings(key, value) VALUES ('commands_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(version).run();
+  console.log('Discord commands registered');
 }
 
 async function rememberMessage(env, interaction, id) {
@@ -137,7 +151,10 @@ export default {
     const interaction = await verified(request, env.DISCORD_PUBLIC_KEY);
     if (!interaction) return new Response('Invalid signature', { status: 401 });
     try {
-      if (interaction.type === 1) return reply({ type: 1 });
+      if (interaction.type === 1) {
+        ctx.waitUntil(ensureCommandsRegistered(env).catch((error) => console.error(error)));
+        return reply({ type: 1 });
+      }
       if (interaction.type === 2) return await command(interaction, env, ctx);
       if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env);
       return ephemeral('Interacción desconocida.');
@@ -147,6 +164,7 @@ export default {
     }
   },
   async scheduled(_event, env) {
+    try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
     const due = await env.DB.prepare("SELECT * FROM proposals WHERE status = 'open' AND expires_at <= ? LIMIT 100").bind(Math.floor(Date.now() / 1000)).all();
     for (const proposal of due.results) await finish(env, proposal);
   }

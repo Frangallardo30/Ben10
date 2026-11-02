@@ -17,3 +17,7 @@ CREATE TABLE IF NOT EXISTS votes (
   choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')),
   PRIMARY KEY(proposal_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS bot_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

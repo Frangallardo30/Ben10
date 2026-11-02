@@ -19,7 +19,7 @@ Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 1
 2. En **Workers y Pages → Crear aplicación**, elegí crear un **Worker** desde un repositorio de GitHub y seleccioná `Frangallardo30/Ben10`. Si pide un comando de despliegue, usá `npx wrangler deploy`; el directorio raíz es `/`.
 3. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
 4. En **Discord Developer Portal → Ben 10 → General Information**, guardá `https://ben10.<tu-subdominio>.workers.dev/interactions` como **Interactions Endpoint URL**. Usá la URL exacta que Cloudflare muestre para tu Worker.
-5. En GitHub, abrí **Ben10 → Settings → Secrets and variables → Actions → New repository secret**. Creá el secreto `DISCORD_BOT_TOKEN` con el token del bot. Después abrí **Actions → Register Discord commands → Run workflow**. Eso registra `/aura` y `/perfil` sin instalar herramientas en tu computadora. El token queda protegido como secreto de GitHub.
+5. El Worker registra `/aura` y `/perfil` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
 
 El endpoint no necesita que mantengas una computadora encendida. Los secretos se guardan en Cloudflare y nunca en GitHub.
 

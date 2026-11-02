@@ -133,12 +133,21 @@ async function expireProposals(env) {
 }
 
 async function ensureCommandsRegistered(env) {
-  if (!env.DISCORD_BOT_TOKEN) return;
+  if (!env.DISCORD_BOT_TOKEN) {
+    console.warn('Discord commands not registered: DISCORD_BOT_TOKEN is missing');
+    return;
+  }
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
-  const version = 'aura-profile-history-info-v3';
+  const version = 'aura-profile-history-info-v4';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
-  if (saved?.value === version) return;
-  const response = await discord(env, `/applications/${env.DISCORD_APPLICATION_ID}/commands`, 'PUT', commands);
+  const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
+  if (saved?.value === version) {
+    const current = await discord(env, path, 'GET');
+    if (!current.ok) throw new Error(`Discord command lookup failed: ${current.status}`);
+    const registered = await current.json();
+    if (commands.every((command) => registered.some((item) => (item.type ?? 1) === 1 && item.name === command.name && item.description === command.description))) return;
+  }
+  const response = await discord(env, path, 'PUT', commands);
   if (!response.ok) throw new Error(`Discord command registration failed: ${response.status}`);
   await env.DB.prepare("INSERT INTO bot_settings(key, value) VALUES ('commands_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(version).run();
   console.log('Discord commands registered');

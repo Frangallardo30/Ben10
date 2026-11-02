@@ -21,5 +21,6 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-015](B10-015.md) | Evitar propuestas duplicadas | Pendiente | Media |
 | [B10-016](B10-016.md) | Configurar el bot por servidor | Pendiente | Alta |
 | [B10-017](B10-017.md) | Panel de moderación | Pendiente | Alta |
+| [B10-018](B10-018.md) | Recuperar el comando /info en Discord | En curso | Alta |
 
-Para una tarea nueva, copiá la plantilla como `B10-018.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales. El [flujo de Codex](../../.codex/workflows/tasks.md) explica cómo relacionar tareas y [especificaciones vigentes](../specs/README.md).
+Para una tarea nueva, copiá la plantilla como `B10-019.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales. El [flujo de Codex](../../.codex/workflows/tasks.md) explica cómo relacionar tareas y [especificaciones vigentes](../specs/README.md).

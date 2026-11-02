@@ -1,0 +1,11 @@
+{
+  "name": "ben10bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "register": "node scripts/register-commands.mjs"
+  },
+  "devDependencies": { "wrangler": "^4.0.0" }
+}

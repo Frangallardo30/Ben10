@@ -4,7 +4,7 @@ Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Wor
 
 Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
 
-El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md). Cada tarea usa la [plantilla](docs/tasks/TEMPLATE.md) compartida con FrangaFlix.
+El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md). Cada tarea usa la [plantilla](docs/tasks/TEMPLATE.md) compartida con FrangaFlix. Las [pautas para trabajar con Codex](.codex/README.md) y la [especificación vigente](docs/specs/README.md) acompañan ese seguimiento.
 
 ## Cómo funciona
 

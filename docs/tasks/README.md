@@ -11,5 +11,6 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-005](B10-005.md) | Guardar la fecha real de cada propuesta | Pendiente | Media |
 | [B10-006](B10-006.md) | Probar el Worker en su runtime y en Discord | Pendiente | Alta |
 | [B10-007](B10-007.md) | Mejorar diagnóstico y operación en Cloudflare | Pendiente | Media |
+| [B10-008](B10-008.md) | Adaptar las pautas de FrangaFlix a Codex | Hecha | Media |
 
-Para una tarea nueva, copiá la plantilla como `B10-008.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales.
+Para una tarea nueva, copiá la plantilla como `B10-009.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales. El [flujo de Codex](../../.codex/workflows/tasks.md) explica cómo relacionar tareas y [especificaciones vigentes](../specs/README.md).

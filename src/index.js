@@ -33,6 +33,19 @@ async function verified(request, publicKey) {
 const option = (interaction, name) => interaction.data.options?.find((item) => item.name === name)?.value;
 const actor = (interaction) => interaction.member?.user?.id ?? interaction.user?.id;
 const label = (amount) => `${amount > 0 ? '+' : ''}${amount}`;
+const formatNumber = (value) => new Intl.NumberFormat('es-AR').format(value);
+
+function profileIdentity(interaction, userId) {
+  const user = interaction.data.resolved?.users?.[userId] ??
+    (actor(interaction) === userId ? (interaction.member?.user ?? interaction.user) : null);
+  const member = interaction.data.resolved?.members?.[userId];
+  const name = member?.nick || user?.global_name || user?.username || 'Miembro del servidor';
+  const avatarHash = member?.avatar || user?.avatar;
+  const avatar = avatarHash
+    ? `https://cdn.discordapp.com/${member?.avatar ? `guilds/${interaction.guild_id}/users/${userId}/avatars` : `avatars/${userId}`}/${avatarHash}.${avatarHash.startsWith('a_') ? 'gif' : 'png'}?size=256`
+    : `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(userId) >> 22n) % 6n)}.png`;
+  return { name, avatar };
+}
 
 async function counts(db, id) {
   const rows = await db.prepare('SELECT choice, COUNT(*) AS n FROM votes WHERE proposal_id = ? GROUP BY choice').bind(id).all();
@@ -102,10 +115,26 @@ async function command(interaction, env, ctx) {
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
   if (interaction.data.name === 'perfil') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
-    const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
+    const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
+    const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open' AND expires_at > ?").bind(interaction.guild_id, user, Math.floor(Date.now() / 1000)).first();
     const history = await env.DB.prepare("SELECT amount, reason FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY expires_at DESC LIMIT 5").bind(interaction.guild_id, user).all();
-    const lines = history.results.map((item) => `${label(item.amount)} · ${item.reason}`);
-    return reply({ type: 4, data: { embeds: [{ title: `Aura de <@${user}>`, description: `**Total: ${score?.aura ?? 0}**\n\n${lines.length ? lines.join('\n') : 'Sin movimientos aprobados.'}`, color: 0x52b9ed }] } });
+    const identity = profileIdentity(interaction, user);
+    const lines = history.results.map((item) => `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
+    return reply({ type: 4, data: {
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        author: { name: `${identity.name} · Perfil de aura`, icon_url: identity.avatar },
+        description: `✨ **Aura total**\n# ${formatNumber(score?.aura ?? 0)} puntos\n\n<@${user}>`,
+        color: 0xff9c53,
+        thumbnail: { url: identity.avatar },
+        fields: [
+          { name: '✅ Cambios aprobados', value: formatNumber(score?.approved ?? 0), inline: true },
+          { name: '🗳️ Votaciones abiertas', value: formatNumber(pending?.total ?? 0), inline: true },
+          { name: '📜 Últimos movimientos', value: lines.length ? lines.join('\n') : 'Todavía no hay cambios aprobados.', inline: false }
+        ],
+        footer: { text: 'Ben 10 · El aura cambia cuando termina la votación' }
+      }]
+    } });
   }
   if (interaction.data.name !== 'aura') return ephemeral('Comando desconocido.');
   const target = option(interaction, 'usuario');

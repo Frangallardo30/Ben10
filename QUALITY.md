@@ -24,7 +24,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 
 ## Límites conocidos
 
-- Una propuesta sin los votos necesarios queda abierta indefinidamente, según la regla actual.
+- Las propuestas sin los votos necesarios vencen a las 24 horas. El cron puede tardar hasta cinco minutos en retirar los botones; propuestas antiguas sin ID de mensaje pueden conservarlos hasta que alguien los pulse.
 - El voto especial refleja si la persona tenía el rol cuando emitió o cambió ese voto. Si pierde el rol después, conserva esa condición hasta que vuelva a votar.
 - Las pruebas locales usan SQLite y respuestas firmadas simuladas. No sustituyen la prueba manual de permisos, latencia y aspecto de los embeds en Discord y Cloudflare.
 - Discord exige responder a las interacciones en pocos segundos. Si D1 o Discord se ralentizan o fallan, puede aparecer «La aplicación no respondió». Revisá los registros de Cloudflare en ese caso.

@@ -6,7 +6,9 @@
 
 La propuesta aparece con botones para aprobar o desaprobar. Cada persona puede emitir un voto y cambiarlo mientras esté abierta. Quien propone y quien recibe el aura no pueden votar. Todos los votos cuentan en el total general. Los miembros del rol `1431791263547392121` también suman en el recuento especial del rol. Esta condición se toma al emitir o cambiar el voto; perder el rol después no la quita hasta volver a votar.
 
-La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol y empata o lidera el recuento general. Si esa opción va perdiendo en el total, necesita seis votos del rol para imponerse. Seis votos del rol en una opción tienen precedencia en el cierre. Si ambas opciones tienen cuatro votos del rol y el total general empata, sigue abierta hasta que se alcance otra condición. Tras el cierre no admite más votos. No hay cierre automático por tiempo.
+La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol y empata o lidera el recuento general. Si esa opción va perdiendo en el total, necesita seis votos del rol para imponerse. Seis votos del rol en una opción tienen precedencia en el cierre. Si ambas opciones tienen cuatro votos del rol y el total general empata, sigue abierta hasta que se alcance otra condición. Tras el cierre no admite más votos.
+
+Si no se alcanza un resultado, vence a las 24 horas sin cambiar el aura. El cron revisa las propuestas cada cinco minutos y marca las vencidas; un voto después del plazo tampoco cuenta aunque el cron aún no haya corrido. El bot intenta quitar los botones del mensaje original y vuelve a intentarlo si Discord falla. Las propuestas creadas antes de guardar el ID del mensaje pueden quedar con botones visibles si nadie interactuó con ellas; al pulsarlos, el bot muestra que la votación venció.
 
 ## Consultar
 
@@ -14,6 +16,6 @@ La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol
 - `/historial [usuario] [pagina]` lista cambios aprobados con puntos, motivo, fecha y proponente, ocho por página. Sin `usuario`, muestra el historial propio; la primera página es la predeterminada.
 - `/info` explica dentro de Discord los comandos y las reglas de votación.
 
-El aura total suma solo propuestas aprobadas. Las consultas se separan por servidor. D1 guarda IDs de servidor y usuarios, puntos, motivos y votos. El campo histórico `expires_at` se usa para calcular la fecha mostrada en historial, aunque las propuestas ya no vencen.
+El aura total suma solo propuestas aprobadas. Las consultas se separan por servidor. D1 guarda IDs de servidor y usuarios, puntos, motivos y votos. `expires_at` marca el vencimiento y sirve para calcular la fecha mostrada en historial.
 
 Los límites y comprobaciones conocidos están en [`QUALITY.md`](../../QUALITY.md). Las mejoras pendientes se registran en [`docs/tasks/`](../tasks/README.md).

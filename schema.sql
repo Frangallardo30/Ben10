@@ -27,3 +27,7 @@ CREATE TABLE IF NOT EXISTS bot_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS proposal_expiry_sync (
+  proposal_id TEXT PRIMARY KEY,
+  synced INTEGER NOT NULL DEFAULT 0
+);

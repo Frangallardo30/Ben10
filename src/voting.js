@@ -4,7 +4,7 @@ export const VOTES_TO_OVERRIDE = 6;
 
 export const UPSERT_VOTE_SQL = "INSERT INTO votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice";
 export const UPSERT_ROLE_VOTE_SQL = "INSERT INTO role_votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice";
-export const REMOVE_ROLE_VOTE_SQL = 'DELETE FROM role_votes WHERE proposal_id = ? AND user_id = ?';
+export const REMOVE_ROLE_VOTE_SQL = "DELETE FROM role_votes WHERE proposal_id = ? AND user_id = ? AND EXISTS (SELECT 1 FROM proposals WHERE id = role_votes.proposal_id AND status = 'open')";
 
 export const CLOSE_PROPOSAL_SQL = `UPDATE proposals SET status = (
   SELECT CASE

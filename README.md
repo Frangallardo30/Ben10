@@ -10,7 +10,7 @@ El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md).
 
 - `/aura usuario:@Fran puntos:-100 motivo:Perdió una partida` publica una propuesta con botones 👍 **Aprobar** y 👎 **Desaprobar**. También podés postular tu propia aura.
 - Todos pueden votar y sus votos aparecen en el recuento. Los votos de miembros con el rol `1431791263547392121` también aparecen en un recuento separado. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
-- La votación se cierra con **cuatro votos iguales del rol** si esa opción empata o lidera el total general. Si va perdiendo en el total, necesita **seis votos iguales del rol** para imponerse. Los votos del resto siempre cuentan en el total y pueden cambiar cuándo se alcanza el cierre. No hay cierre automático por tiempo.
+- La votación se cierra con **cuatro votos iguales del rol** si esa opción empata o lidera el total general. Si va perdiendo en el total, necesita **seis votos iguales del rol** para imponerse. Los votos del resto siempre cuentan en el total y pueden cambiar cuándo se alcanza el cierre. Si no hay resultado, vence a las 24 horas sin cambiar el aura.
 - `/perfil usuario:@Fran` muestra el total de aura y los últimos cinco cambios aprobados. Sin usuario, muestra tu perfil.
 - `/historial usuario:@Fran pagina:1` muestra todos los cambios aprobados, con puntos, motivos, fecha y quién los propuso. Hay ocho movimientos por página; sin usuario, muestra tu historial.
 - `/info` explica los comandos y las reglas de votación dentro de Discord.

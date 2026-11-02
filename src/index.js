@@ -2,6 +2,7 @@ import { commands } from './commands.js';
 import { AURA_VOTER_ROLE_ID, VOTES_TO_CLOSE, VOTES_TO_OVERRIDE, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
 
 const DISCORD = 'https://discord.com/api/v10';
+const PROPOSAL_LIFETIME_SECONDS = 86400;
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 const ephemeral = (content) => reply({ type: 4, data: { content, flags: 64 } });
 const bytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (x) => parseInt(x, 16));
@@ -60,7 +61,7 @@ async function counts(db, id) {
 
 function display(proposal, votes) {
   const closed = proposal.status !== 'open';
-  let result = proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada';
+  let result = proposal.status === 'approved' ? '✅ Aprobada' : proposal.status === 'expired' ? '⌛ Vencida sin cambiar el aura' : '❌ Rechazada';
   if (!closed) {
     if (votes.roleYes >= VOTES_TO_CLOSE && votes.yes < votes.no) {
       result = `👍 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleYes} voto(s) más del rol`;
@@ -79,7 +80,7 @@ function display(proposal, votes) {
       fields: [
         { name: 'Todos los votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true },
         { name: 'Votos del rol', value: `👍 ${votes.roleYes} · 👎 ${votes.roleNo}`, inline: true },
-        { name: 'Estado', value: result, inline: false }
+        { name: 'Estado', value: closed ? result : `${result}\nVence <t:${proposal.expires_at}:R>.`, inline: false }
       ],
       footer: { text: 'Una persona, un voto. Quien propone y quien recibe no votan.' }
     }],
@@ -92,6 +93,43 @@ function display(proposal, votes) {
 
 async function discord(env, path, method, body) {
   return fetch(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+}
+
+async function rememberOriginalMessage(env, token, proposalId) {
+  for (const delay of [300, 1000, 2000]) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      const response = await fetch(`${DISCORD}/webhooks/${env.DISCORD_APPLICATION_ID}/${token}/messages/@original`);
+      if (!response.ok) continue;
+      const message = await response.json();
+      if (!/^\d+$/.test(message.id ?? '')) return;
+      await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(message.id, proposalId).run();
+      return;
+    } catch { /* Discord may not have created the original message yet. */ }
+  }
+  console.warn('Could not save aura proposal message ID', proposalId);
+}
+
+async function expireProposals(env) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS proposal_expiry_sync (proposal_id TEXT PRIMARY KEY, synced INTEGER NOT NULL DEFAULT 0)').run();
+  await env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE status = 'open' AND expires_at <= ?").bind(now).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO proposal_expiry_sync(proposal_id) SELECT id FROM proposals WHERE status = 'expired' AND message_id IS NOT NULL").run();
+  const pending = await env.DB.prepare("SELECT p.* FROM proposals p JOIN proposal_expiry_sync s ON s.proposal_id = p.id WHERE p.status = 'expired' AND p.message_id IS NOT NULL AND s.synced = 0 ORDER BY p.expires_at LIMIT 20").all();
+  for (const proposal of pending.results) {
+    if (!env.DISCORD_BOT_TOKEN) break;
+    try {
+      const response = await discord(env, `/channels/${proposal.channel_id}/messages/${proposal.message_id}`, 'PATCH', display(proposal, await counts(env.DB, proposal.id)));
+      if (response.ok || response.status === 404) {
+        await env.DB.prepare('UPDATE proposal_expiry_sync SET synced = 1 WHERE proposal_id = ?').bind(proposal.id).run();
+      } else {
+        console.warn('Could not update expired aura message', proposal.id, response.status);
+        if (response.status === 429) break;
+      }
+    } catch (error) {
+      console.warn('Could not update expired aura message', proposal.id, error?.name);
+    }
+  }
 }
 
 async function ensureCommandsRegistered(env) {
@@ -138,7 +176,7 @@ async function command(interaction, env, ctx) {
           { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo.', inline: false },
           { name: '👤 /perfil', value: 'Muestra el aura total, las votaciones abiertas y los últimos cambios aprobados. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
-          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6.`, inline: false }
+          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
         footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
       }]
@@ -198,8 +236,9 @@ async function command(interaction, env, ctx) {
   const amount = option(interaction, 'puntos');
   const reason = String(option(interaction, 'motivo') ?? '').trim();
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
-  const proposal = { id: crypto.randomUUID(), guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + 86400, status: 'open' };
+  const proposal = { id: crypto.randomUUID(), guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
   await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
+  if (interaction.token) ctx.waitUntil(rememberOriginalMessage(env, interaction.token, proposal.id));
   return reply({ type: 4, data: display(proposal, { yes: 0, no: 0, roleYes: 0, roleNo: 0 }) });
 }
 
@@ -209,14 +248,24 @@ async function vote(interaction, env) {
   if (!['yes', 'no'].includes(choice)) return ephemeral('Voto inválido.');
   const proposal = await env.DB.prepare('SELECT * FROM proposals WHERE id = ? AND guild_id = ?').bind(id, interaction.guild_id).first();
   if (!proposal) return ephemeral('Propuesta inexistente.');
+  if (interaction.message?.id && !proposal.message_id) {
+    await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(interaction.message.id, id).run();
+  }
+  if (proposal.status === 'expired' || (proposal.status === 'open' && proposal.expires_at <= Math.floor(Date.now() / 1000))) {
+    await env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id).run();
+    const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
+    return updated.status === 'expired' ? reply({ type: 7, data: display(updated, await counts(env.DB, id)) }) : ephemeral('La votación ya cerró.');
+  }
   if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
   const user = actor(interaction);
   if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
+  const now = Math.floor(Date.now() / 1000);
   const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
   const roleVote = hasRole
     ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id)
     : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user);
   await env.DB.batch([
+    env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= ?").bind(id, now),
     env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id),
     roleVote,
     env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id)
@@ -258,5 +307,6 @@ export default {
   },
   async scheduled(_event, env) {
     try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
+    try { await expireProposals(env); } catch (error) { console.error('Aura expiry failed', error); }
   }
 };

@@ -10,5 +10,6 @@ export const commands = [
   { name: 'historial', description: 'Muestra los motivos de los cambios de aura aprobados', options: [
     { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false },
     { type: 4, name: 'pagina', description: 'Página del historial (8 movimientos por página)', required: false, min_value: 1 }
-  ] }
+  ] },
+  { name: 'info', description: 'Explica los comandos y las reglas de votación de Ben 10' }
 ];

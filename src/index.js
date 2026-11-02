@@ -98,7 +98,7 @@ async function discord(env, path, method, body) {
 async function ensureCommandsRegistered(env) {
   if (!env.DISCORD_BOT_TOKEN) return;
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
-  const version = 'aura-profile-history-v2';
+  const version = 'aura-profile-history-info-v3';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   if (saved?.value === version) return;
   const response = await discord(env, `/applications/${env.DISCORD_APPLICATION_ID}/commands`, 'PUT', commands);
@@ -117,6 +117,23 @@ async function ensureVotingPolicy(db) {
 }
 
 async function command(interaction, env, ctx) {
+  if (interaction.data.name === 'info') {
+    return reply({ type: 4, data: {
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        title: '✨ Ben 10 · Guía de aura',
+        description: 'Postulá cambios de aura, votá con tus amigos y consultá los resultados.',
+        color: 0xff9c53,
+        fields: [
+          { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo.', inline: false },
+          { name: '👤 /perfil', value: 'Muestra el aura total, las votaciones abiertas y los últimos cambios aprobados. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
+          { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
+          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6.`, inline: false }
+        ],
+        footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
+      }]
+    } });
+  }
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
   await ensureVotingPolicy(env.DB);
   if (interaction.data.name === 'historial') {

@@ -28,4 +28,4 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - El voto especial refleja si la persona tenía el rol cuando emitió o cambió ese voto. Si pierde el rol después, conserva esa condición hasta que vuelva a votar.
 - Las pruebas locales usan SQLite y respuestas firmadas simuladas. No sustituyen la prueba manual de permisos, latencia y aspecto de los embeds en Discord y Cloudflare.
 - Discord exige responder a las interacciones en pocos segundos. Si D1 o Discord se ralentizan o fallan, puede aparecer «La aplicación no respondió». Revisá los registros de Cloudflare en ese caso.
-- Votos enviados casi simultáneamente pueden dejar un mensaje con un recuento visual desactualizado aunque D1 guarde el resultado correcto. La siguiente interacción actualiza el mensaje; después del cierre, la propuesta ya no acepta votos.
+- Votos enviados casi simultáneamente pueden dejar el embed con un recuento visual desactualizado aunque D1 guarde el resultado correcto. En ese caso, `/perfil` y `/historial` muestran el resultado guardado; después del cierre, la propuesta ya no acepta votos. El embed no se corrige automáticamente.

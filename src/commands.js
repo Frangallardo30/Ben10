@@ -6,5 +6,9 @@ export const commands = [
   ] },
   { name: 'perfil', description: 'Muestra el aura y los últimos movimientos aprobados', options: [
     { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false }
+  ] },
+  { name: 'historial', description: 'Muestra los motivos de los cambios de aura aprobados', options: [
+    { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false },
+    { type: 4, name: 'pagina', description: 'Página del historial (8 movimientos por página)', required: false, min_value: 1 }
   ] }
 ];

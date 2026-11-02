@@ -79,7 +79,7 @@ async function discord(env, path, method, body) {
 async function ensureCommandsRegistered(env) {
   if (!env.DISCORD_BOT_TOKEN) return;
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
-  const version = 'aura-profile-v1';
+  const version = 'aura-profile-history-v2';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   if (saved?.value === version) return;
   const response = await discord(env, `/applications/${env.DISCORD_APPLICATION_ID}/commands`, 'PUT', commands);
@@ -113,6 +113,30 @@ async function finish(env, proposal) {
 
 async function command(interaction, env, ctx) {
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+  if (interaction.data.name === 'historial') {
+    const user = option(interaction, 'usuario') ?? actor(interaction);
+    const page = option(interaction, 'pagina') ?? 1;
+    const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
+    const total = count?.total ?? 0;
+    const pages = Math.max(1, Math.ceil(total / 8));
+    if (page > pages) return ephemeral(`Ese perfil tiene ${pages} página${pages === 1 ? '' : 's'} de historial.`);
+    const history = await env.DB.prepare("SELECT amount, reason, proposer_id, expires_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY expires_at DESC, id DESC LIMIT 8 OFFSET ?").bind(interaction.guild_id, user, (page - 1) * 8).all();
+    const identity = profileIdentity(interaction, user);
+    const entries = history.results.map((item) => {
+      const reason = item.reason.replace(/\s+/g, ' ').trim();
+      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.expires_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+    });
+    return reply({ type: 4, data: {
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        author: { name: `${identity.name} · Historial de aura`, icon_url: identity.avatar },
+        description: `**Movimientos aprobados de <@${user}>**\n\n${entries.length ? entries.join('\n\n') : 'Todavía no hay cambios de aura aprobados.'}`,
+        color: 0xff9c53,
+        thumbnail: { url: identity.avatar },
+        footer: { text: `Página ${page} de ${pages} · ${formatNumber(total)} movimientos${page < pages ? ' · Usá la opción pagina para continuar' : ''}` }
+      }]
+    } });
+  }
   if (interaction.data.name === 'perfil') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();

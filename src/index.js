@@ -3,6 +3,7 @@ import { commands } from './commands.js';
 const DISCORD = 'https://discord.com/api/v10';
 const AURA_VOTER_ROLE_ID = '1431791263547392121';
 const VOTES_TO_CLOSE = 4;
+const VOTES_TO_OVERRIDE = 6;
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 const ephemeral = (content) => reply({ type: 4, data: { content, flags: 64 } });
 const bytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (x) => parseInt(x, 16));
@@ -60,7 +61,16 @@ async function counts(db, id) {
 
 function display(proposal, votes) {
   const closed = proposal.status !== 'open';
-  const result = closed ? (proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada') : 'Abierta hasta que 4 del rol voten igual';
+  let result = proposal.status === 'approved' ? '✅ Aprobada' : '❌ Rechazada';
+  if (!closed) {
+    if (votes.roleYes >= VOTES_TO_CLOSE && votes.yes < votes.no) {
+      result = `👍 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleYes} voto(s) más del rol`;
+    } else if (votes.roleNo >= VOTES_TO_CLOSE && votes.no < votes.yes) {
+      result = `👎 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleNo} voto(s) más del rol`;
+    } else {
+      result = 'Abierta: 4 del rol si empata o lidera; 6 si va perdiendo';
+    }
+  }
   return {
     allowed_mentions: { parse: [] },
     embeds: [{
@@ -69,7 +79,7 @@ function display(proposal, votes) {
       color: closed ? (proposal.status === 'approved' ? 0x21a675 : 0xc84a4a) : 0x5785f2,
       fields: [
         { name: 'Todos los votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true },
-        { name: 'Votos del rol', value: `👍 ${votes.roleYes}/4 · 👎 ${votes.roleNo}/4`, inline: true },
+        { name: 'Votos del rol', value: `👍 ${votes.roleYes} · 👎 ${votes.roleNo}`, inline: true },
         { name: 'Estado', value: result, inline: false }
       ],
       footer: { text: 'Una persona, un voto. Quien propone y quien recibe no votan.' }
@@ -182,7 +192,21 @@ async function vote(interaction, env) {
   await env.DB.batch([
     env.DB.prepare("INSERT INTO votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id),
     roleVote,
-    env.DB.prepare("UPDATE proposals SET status = CASE WHEN (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'yes') >= ? THEN 'approved' WHEN (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'no') >= ? THEN 'rejected' ELSE status END WHERE id = ? AND status = 'open'").bind(id, VOTES_TO_CLOSE, id, VOTES_TO_CLOSE, id)
+    env.DB.prepare(`UPDATE proposals SET status = (
+      SELECT CASE
+        WHEN role_yes >= ${VOTES_TO_OVERRIDE} THEN 'approved'
+        WHEN role_no >= ${VOTES_TO_OVERRIDE} THEN 'rejected'
+        WHEN role_yes >= ${VOTES_TO_CLOSE} AND (all_yes > all_no OR (all_yes = all_no AND role_no < ${VOTES_TO_CLOSE})) THEN 'approved'
+        WHEN role_no >= ${VOTES_TO_CLOSE} AND (all_no > all_yes OR (all_yes = all_no AND role_yes < ${VOTES_TO_CLOSE})) THEN 'rejected'
+        ELSE 'open'
+      END FROM (
+        SELECT
+          (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'yes') AS all_yes,
+          (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'no') AS all_no,
+          (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'yes') AS role_yes,
+          (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'no') AS role_no
+      )
+    ) WHERE id = ? AND status = 'open'`).bind(id, id, id, id, id)
   ]);
   const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
   return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });

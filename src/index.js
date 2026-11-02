@@ -121,7 +121,15 @@ async function vote(interaction, env) {
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'GET' && new URL(request.url).pathname === '/health') {
-      return reply({ status: 'ok', public_key_ready: /^[0-9a-fA-F]{64}$/.test(env.DISCORD_PUBLIC_KEY ?? ''), database_ready: Boolean(env.DB) });
+      const publicKey = env.DISCORD_PUBLIC_KEY ?? '';
+      return reply({
+        status: 'ok',
+        public_key_present: publicKey.length > 0,
+        public_key_length: publicKey.length,
+        public_key_trimmed_length: publicKey.trim().length,
+        public_key_ready: /^[0-9a-fA-F]{64}$/.test(publicKey),
+        database_ready: Boolean(env.DB)
+      });
     }
     if (request.method !== 'POST' || new URL(request.url).pathname !== '/interactions') return new Response('Not found', { status: 404 });
     const interaction = await verified(request, env.DISCORD_PUBLIC_KEY);

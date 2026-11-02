@@ -6,13 +6,26 @@ const bytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (x) => parseInt
 async function verified(request, publicKey) {
   const signature = request.headers.get('X-Signature-Ed25519');
   const timestamp = request.headers.get('X-Signature-Timestamp');
-  if (!signature || !timestamp || !publicKey || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return null;
+  if (!signature || !timestamp || !publicKey) {
+    console.warn('Discord verification: missing signature, timestamp, or public key');
+    return null;
+  }
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
+    console.warn('Discord verification: timestamp outside five minute window');
+    return null;
+  }
   const body = await request.text();
   try {
     const key = await crypto.subtle.importKey('raw', bytes(publicKey), 'Ed25519', false, ['verify']);
-    if (!(await crypto.subtle.verify('Ed25519', key, bytes(signature), new TextEncoder().encode(timestamp + body)))) return null;
+    if (!(await crypto.subtle.verify('Ed25519', key, bytes(signature), new TextEncoder().encode(timestamp + body)))) {
+      console.warn('Discord verification: invalid signature');
+      return null;
+    }
     return JSON.parse(body);
-  } catch { return null; }
+  } catch (error) {
+    console.warn('Discord verification: invalid key or request format', error?.name);
+    return null;
+  }
 }
 
 const option = (interaction, name) => interaction.data.options?.find((item) => item.name === name)?.value;
@@ -107,6 +120,9 @@ async function vote(interaction, env) {
 
 export default {
   async fetch(request, env, ctx) {
+    if (request.method === 'GET' && new URL(request.url).pathname === '/health') {
+      return reply({ status: 'ok', public_key_ready: /^[0-9a-fA-F]{64}$/.test(env.DISCORD_PUBLIC_KEY ?? ''), database_ready: Boolean(env.DB) });
+    }
     if (request.method !== 'POST' || new URL(request.url).pathname !== '/interactions') return new Response('Not found', { status: 404 });
     const interaction = await verified(request, env.DISCORD_PUBLIC_KEY);
     if (!interaction) return new Response('Invalid signature', { status: 401 });

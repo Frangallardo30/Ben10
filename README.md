@@ -2,6 +2,8 @@
 
 Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Workers para recibir comandos y botones, y Cloudflare D1 para guardar las propuestas y los votos. No necesita un proceso encendido todo el día ni una clave de YouTube.
 
+Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
+
 ## Cómo funciona
 
 - `/aura usuario:@Fran puntos:-100 motivo:Perdió una partida` publica una propuesta con botones 👍 **Aprobar** y 👎 **Desaprobar**. También podés postular tu propia aura.

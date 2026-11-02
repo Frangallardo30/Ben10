@@ -1,14 +1,12 @@
 import { commands } from './commands.js';
+import { AURA_VOTER_ROLE_ID, VOTES_TO_CLOSE, VOTES_TO_OVERRIDE, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
 
 const DISCORD = 'https://discord.com/api/v10';
-const AURA_VOTER_ROLE_ID = '1431791263547392121';
-const VOTES_TO_CLOSE = 4;
-const VOTES_TO_OVERRIDE = 6;
 const reply = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 const ephemeral = (content) => reply({ type: 4, data: { content, flags: 64 } });
 const bytes = (hex) => Uint8Array.from(hex.match(/.{2}/g) ?? [], (x) => parseInt(x, 16));
 
-async function verified(request, publicKey) {
+export async function verified(request, publicKey) {
   const signature = request.headers.get('X-Signature-Ed25519');
   const timestamp = request.headers.get('X-Signature-Timestamp');
   if (!signature || !timestamp || !publicKey) {
@@ -44,9 +42,10 @@ function profileIdentity(interaction, userId) {
   const member = interaction.data.resolved?.members?.[userId];
   const name = member?.nick || user?.global_name || user?.username || 'Miembro del servidor';
   const avatarHash = member?.avatar || user?.avatar;
+  const defaultAvatar = /^\d+$/.test(userId) ? Number((BigInt(userId) >> 22n) % 6n) : 0;
   const avatar = avatarHash
     ? `https://cdn.discordapp.com/${member?.avatar ? `guilds/${interaction.guild_id}/users/${userId}/avatars` : `avatars/${userId}`}/${avatarHash}.${avatarHash.startsWith('a_') ? 'gif' : 'png'}?size=256`
-    : `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(userId) >> 22n) % 6n)}.png`;
+    : `https://cdn.discordapp.com/embed/avatars/${defaultAvatar}.png`;
   return { name, avatar };
 }
 
@@ -107,7 +106,18 @@ async function ensureCommandsRegistered(env) {
   console.log('Discord commands registered');
 }
 
+let votingPolicyReady;
+
 async function ensureVotingPolicy(db) {
+  if (votingPolicyReady) return votingPolicyReady;
+  votingPolicyReady = migrateVotingPolicy(db).catch((error) => {
+    votingPolicyReady = undefined;
+    throw error;
+  });
+  return votingPolicyReady;
+}
+
+async function migrateVotingPolicy(db) {
   await db.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
   await db.prepare("CREATE TABLE IF NOT EXISTS role_votes (proposal_id TEXT NOT NULL, user_id TEXT NOT NULL, choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')), PRIMARY KEY(proposal_id, user_id))").run();
   await db.batch([
@@ -201,29 +211,15 @@ async function vote(interaction, env) {
   if (!proposal) return ephemeral('Propuesta inexistente.');
   if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
   const user = actor(interaction);
-  if (user === proposal.target_id || user === proposal.proposer_id) return ephemeral('Quien propone y quien recibe no pueden votar.');
+  if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
   const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
   const roleVote = hasRole
-    ? env.DB.prepare("INSERT INTO role_votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id)
-    : env.DB.prepare('DELETE FROM role_votes WHERE proposal_id = ? AND user_id = ?').bind(id, user);
+    ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id)
+    : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user);
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO votes(proposal_id, user_id, choice) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM proposals WHERE id = ? AND status = 'open') ON CONFLICT(proposal_id, user_id) DO UPDATE SET choice = excluded.choice").bind(id, user, choice, id),
+    env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id),
     roleVote,
-    env.DB.prepare(`UPDATE proposals SET status = (
-      SELECT CASE
-        WHEN role_yes >= ${VOTES_TO_OVERRIDE} THEN 'approved'
-        WHEN role_no >= ${VOTES_TO_OVERRIDE} THEN 'rejected'
-        WHEN role_yes >= ${VOTES_TO_CLOSE} AND (all_yes > all_no OR (all_yes = all_no AND role_no < ${VOTES_TO_CLOSE})) THEN 'approved'
-        WHEN role_no >= ${VOTES_TO_CLOSE} AND (all_no > all_yes OR (all_yes = all_no AND role_yes < ${VOTES_TO_CLOSE})) THEN 'rejected'
-        ELSE 'open'
-      END FROM (
-        SELECT
-          (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'yes') AS all_yes,
-          (SELECT COUNT(*) FROM votes WHERE proposal_id = ? AND choice = 'no') AS all_no,
-          (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'yes') AS role_yes,
-          (SELECT COUNT(*) FROM role_votes WHERE proposal_id = ? AND choice = 'no') AS role_no
-      )
-    ) WHERE id = ? AND status = 'open'`).bind(id, id, id, id, id)
+    env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id)
   ]);
   const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
   return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });

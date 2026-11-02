@@ -2,6 +2,10 @@ name = "ben10"
 main = "src/index.js"
 compatibility_date = "2025-06-01"
 
+[vars]
+DISCORD_PUBLIC_KEY = "5ec4472822d315b8760ae27dbfb1247463e1d3bbac41bd0971e2490b991b5d41"
+DISCORD_APPLICATION_ID = "1417570023370653836"
+
 [triggers]
 crons = ["*/5 * * * *"]
 

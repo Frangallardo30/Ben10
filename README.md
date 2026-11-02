@@ -17,7 +17,7 @@ Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 1
 
 1. En Cloudflare **D1 SQL Database → ben10bot → Console**, copiá las tres instrucciones `CREATE TABLE` y la instrucción `CREATE INDEX` de [`schema.sql`](schema.sql). Ejecutalas una por una. Si indica que la tabla ya existe, podés continuar.
 2. En **Workers y Pages → Crear aplicación**, elegí crear un **Worker** desde un repositorio de GitHub y seleccioná `Frangallardo30/Ben10`. Si pide un comando de despliegue, usá `npx wrangler deploy`; el directorio raíz es `/`.
-3. Cuando aparezca el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá como secretos `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN` y `DISCORD_APPLICATION_ID`. La clave pública y el Application ID están en **General Information** de Discord; el token está en **Bot**. El Application ID es `1417570023370653836`.
+3. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
 4. En **Discord Developer Portal → Ben 10 → General Information**, guardá `https://ben10.<tu-subdominio>.workers.dev/interactions` como **Interactions Endpoint URL**. Usá la URL exacta que Cloudflare muestre para tu Worker.
 5. En GitHub, abrí **Ben10 → Settings → Secrets and variables → Actions → New repository secret**. Creá el secreto `DISCORD_BOT_TOKEN` con el token del bot. Después abrí **Actions → Register Discord commands → Run workflow**. Eso registra `/aura` y `/perfil` sin instalar herramientas en tu computadora. El token queda protegido como secreto de GitHub.
 
@@ -28,7 +28,7 @@ El endpoint no necesita que mantengas una computadora encendida. Los secretos se
 1. Instalá Node.js 20 o posterior. En este directorio, ejecutá `npm install` y `npx wrangler login`.
 2. La base D1 `ben10bot` ya está creada y su ID figura en `wrangler.toml`.
 3. Si usás una terminal, también podés aplicar el esquema con `npx wrangler d1 execute ben10bot --remote --file=schema.sql`.
-4. Configurá tres secretos con `npx wrangler secret put NOMBRE` para `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN` y `DISCORD_APPLICATION_ID`. La clave pública y el Application ID están en **General Information**; el token está en **Bot**. Para `DISCORD_APPLICATION_ID`, ingresá `1417570023370653836`. Guardá el token fuera del repositorio y no lo compartas por chat.
+4. Configurá `DISCORD_BOT_TOKEN` con `npx wrangler secret put DISCORD_BOT_TOKEN`. La Public Key y el Application ID ya están en `wrangler.toml`. Guardá el token fuera del repositorio y no lo compartas por chat.
 5. Ejecutá `npm run deploy`. Copiá la URL `https://ben10.<tu-subdominio>.workers.dev/interactions`.
 6. En **Discord Developer Portal → Ben 10 → General Information**, pegá esa URL en **Interactions Endpoint URL** y guardá. Discord verificará la firma y la respuesta del endpoint.
 7. Registrá los comandos desde tu terminal con el token en una variable privada: `DISCORD_BOT_TOKEN=... npm run register`. No guardes ese comando con el valor real en archivos ni en el historial del shell.

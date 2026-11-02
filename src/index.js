@@ -128,6 +128,8 @@ export default {
         public_key_length: publicKey.length,
         public_key_trimmed_length: publicKey.trim().length,
         public_key_ready: /^[0-9a-fA-F]{64}$/.test(publicKey),
+        bot_token_present: Boolean(env.DISCORD_BOT_TOKEN),
+        application_id_ready: env.DISCORD_APPLICATION_ID === '1417570023370653836',
         database_ready: Boolean(env.DB)
       });
     }

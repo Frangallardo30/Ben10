@@ -1,7 +1,8 @@
-import { display } from './presentation.js';
-import { MESSAGE_SYNC_SCHEMA_SQL, QUEUE_MESSAGE_SYNC_SQL, requestMessageSync, retryMessageSync } from './message-sync.js';
+import { prepareWrites } from './database.js';
+import { editDeferred, deferredButtonError, withDeadline } from './deferred.js';
+import { QUEUE_MESSAGE_SYNC_SQL, requestMessageSync, retryMessageSync, readProposalMessage } from './message-sync.js';
 export { ProposalMessageSync } from './message-sync.js';
-import { NOTIFICATION_SCHEMA_SQL, QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from './notifications.js';
+import { QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from './notifications.js';
 import { commands } from './commands.js';
 import { AURA_VOTER_ROLE_ID, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
 
@@ -58,29 +59,8 @@ async function discord(env, path, method, body) {
   return fetch(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 }
 
-async function rememberOriginalMessage(env, token, proposalId) {
-  for (const delay of [300, 1000, 2000]) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    try {
-      const response = await fetch(`${DISCORD}/webhooks/${env.DISCORD_APPLICATION_ID}/${token}/messages/@original`);
-      if (!response.ok) continue;
-      const message = await response.json();
-      if (!/^\d+$/.test(message.id ?? '')) return;
-      await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(message.id, proposalId).run();
-      await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
-      await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(proposalId).run();
-      await requestMessageSync(env, proposalId).catch((error) => {
-        console.warn('Original message saved; synchronization pending', proposalId, error?.name);
-      });
-      return;
-    } catch { /* Discord may not have created the original message yet. */ }
-  }
-  console.warn('Could not save aura proposal message ID', proposalId);
-}
-
 async function expireProposals(env) {
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO proposal_message_sync(proposal_id)
       SELECT id FROM proposals WHERE status = 'open' AND expires_at <= ?
@@ -103,7 +83,7 @@ async function ensureCommandsRegistered(env) {
     console.warn('Discord commands not registered: DISCORD_BOT_TOKEN is missing');
     return;
   }
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
+  await prepareWrites(env.DB);
   const version = 'aura-profile-history-info-v4';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
@@ -130,26 +110,6 @@ function checkCommandsInBackground(env, ctx) {
   }));
 }
 
-let votingPolicyReady;
-
-async function ensureVotingPolicy(db) {
-  if (votingPolicyReady) return votingPolicyReady;
-  votingPolicyReady = migrateVotingPolicy(db).catch((error) => {
-    votingPolicyReady = undefined;
-    throw error;
-  });
-  return votingPolicyReady;
-}
-
-async function migrateVotingPolicy(db) {
-  await db.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)').run();
-  await db.prepare("CREATE TABLE IF NOT EXISTS role_votes (proposal_id TEXT NOT NULL, user_id TEXT NOT NULL, choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')), PRIMARY KEY(proposal_id, user_id))").run();
-  await db.batch([
-    db.prepare("INSERT OR IGNORE INTO role_votes(proposal_id, user_id, choice) SELECT v.proposal_id, v.user_id, v.choice FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.status = 'open' AND EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),
-    db.prepare("INSERT INTO bot_settings(key, value) VALUES ('voting_policy', 'all-votes-role4-v2') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-  ]);
-}
-
 async function command(interaction, env, ctx) {
   if (interaction.data.name === 'info') {
     return reply({ type: 4, data: {
@@ -169,7 +129,6 @@ async function command(interaction, env, ctx) {
     } });
   }
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
-  await ensureVotingPolicy(env.DB);
   if (interaction.data.name === 'historial') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const page = option(interaction, 'pagina') ?? 1;
@@ -222,14 +181,14 @@ async function command(interaction, env, ctx) {
   const amount = option(interaction, 'puntos');
   const reason = String(option(interaction, 'motivo') ?? '').trim();
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
-  const proposal = { id: crypto.randomUUID(), guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
-  await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
-  if (interaction.token) ctx.waitUntil(rememberOriginalMessage(env, interaction.token, proposal.id));
-  return reply({ type: 4, data: display(proposal, { yes: 0, no: 0, roleYes: 0, roleNo: 0 }) });
+  await prepareWrites(env.DB);
+  const proposal = { id: interaction.id, guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
+  await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
+  return reply({ type: 4, data: (await readProposalMessage(env.DB, proposal.id)).body });
 }
 
 async function vote(interaction, env, ctx) {
-  await ensureVotingPolicy(env.DB);
+  await prepareWrites(env.DB);
   const [, choice, id] = interaction.data.custom_id.split(':');
   if (!['yes', 'no'].includes(choice)) return ephemeral('Voto inválido.');
   const proposal = await env.DB.prepare('SELECT * FROM proposals WHERE id = ? AND guild_id = ?').bind(id, interaction.guild_id).first();
@@ -238,7 +197,6 @@ async function vote(interaction, env, ctx) {
     await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(interaction.message.id, id).run();
   }
   if (proposal.status === 'expired' || (proposal.status === 'open' && proposal.expires_at <= Math.floor(Date.now() / 1000))) {
-    await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
     await env.DB.batch([
       env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
       env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id)
@@ -248,7 +206,6 @@ async function vote(interaction, env, ctx) {
   }
   if (proposal.status !== 'open') {
     // A stale button can still be visible after an earlier failed edit.
-    await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
     await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id).run();
     synchronizeInBackground(env, ctx, id);
     return ephemeral('La votación ya cerró.');
@@ -257,21 +214,70 @@ async function vote(interaction, env, ctx) {
   if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
   const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
   const roleVote = hasRole
-    ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id)
-    : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user);
-  await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
-  await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
+    ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id, interaction.id)
+    : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user, interaction.id);
   await env.DB.batch([
     env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
-    env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id),
+    env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id, interaction.id),
     roleVote,
     env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id),
     env.DB.prepare(QUEUE_NOTIFICATION_SQL).bind(id),
-    env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id)
+    env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id),
+    env.DB.prepare('INSERT OR IGNORE INTO vote_interactions(interaction_id, proposal_id) VALUES (?, ?)').bind(interaction.id, id)
   ]);
   synchronizeInBackground(env, ctx, id);
   ctx.waitUntil(sendClosureNotifications(env, id).catch((error) => console.warn('Closure notice failed', error?.name)));
   return reply({ type: 6 });
+}
+
+async function performInteraction(interaction, env, ctx) {
+  const isCommand = interaction.type === 2;
+  const result = await (isCommand ? command(interaction, env, ctx) : vote(interaction, env, ctx));
+  const payload = await result.json();
+  if (!isCommand) {
+    if (payload.type === 4) await deferredButtonError(interaction, env, payload.data.content);
+    return;
+  }
+  if (interaction.data.name !== 'aura' || !payload.data.embeds) {
+    await editDeferred(interaction, env, payload.data);
+    return;
+  }
+  const proposal = await env.DB.prepare('SELECT message_id FROM proposals WHERE id = ?').bind(interaction.id).first();
+  if (!proposal.message_id) {
+    // Only the per-proposal synchronizer publishes interactive buttons. Replaying
+    // a creation cannot restore an old set of buttons after a later closure.
+    const message = await editDeferred(interaction, env, { ...payload.data, components: [] });
+    if (!/^\d+$/.test(message.id ?? '')) throw new Error('Original message ID missing');
+    await env.DB.batch([
+      env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(message.id, interaction.id),
+      env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(interaction.id)
+    ]);
+  } else {
+    await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(interaction.id).run();
+  }
+  synchronizeInBackground(env, ctx, interaction.id);
+}
+
+async function finishInteraction(interaction, env, ctx) {
+  const isCommand = interaction.type === 2;
+  try {
+    await withDeadline(performInteraction(interaction, env, ctx));
+  } catch (error) {
+    console.warn('Deferred interaction failed', error?.name);
+    const message = isCommand && interaction.data.name !== 'aura'
+      ? 'No pude consultar los datos. Intentá de nuevo en unos segundos.'
+      : 'No pude confirmar la operación. Consultá /perfil antes de volver a intentarlo.';
+    try {
+      if (isCommand) await editDeferred(interaction, env, { content: message, embeds: [], components: [] });
+      else await deferredButtonError(interaction, env, message);
+    } catch (deliveryError) { console.warn('Interaction error delivery failed', deliveryError?.name); }
+  }
+}
+
+function deferInteraction(interaction, env, ctx) {
+  if (!interaction.id || !interaction.token) return ephemeral('La interacción no tiene los datos necesarios. Intentá de nuevo.');
+  ctx.waitUntil(Promise.resolve().then(() => finishInteraction(interaction, env, ctx)));
+  return reply({ type: interaction.type === 2 ? 5 : 6 });
 }
 
 export default {
@@ -298,10 +304,23 @@ export default {
         return reply({ type: 1 });
       }
       if (interaction.type === 2) {
+        if (!['aura', 'perfil', 'historial', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
         checkCommandsInBackground(env, ctx);
-        return await command(interaction, env, ctx);
+        if (interaction.data.name === 'info') return command(interaction, env, ctx);
+        if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+        if (interaction.data.name === 'aura') {
+          const amount = option(interaction, 'puntos');
+          const reason = String(option(interaction, 'motivo') ?? '').trim();
+          if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) {
+            return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
+          }
+        }
+        return deferInteraction(interaction, env, ctx);
       }
-      if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env, ctx);
+      if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('aura:')) {
+        if (!['yes', 'no'].includes(interaction.data.custom_id.split(':')[1])) return ephemeral('Voto inválido.');
+        return deferInteraction(interaction, env, ctx);
+      }
       return ephemeral('Interacción desconocida.');
     } catch (error) {
       console.error('Interaction failed', error);
@@ -309,11 +328,11 @@ export default {
     }
   },
   async scheduled(_event, env) {
+    await prepareWrites(env.DB);
     try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
     try { await expireProposals(env); } catch (error) { console.error('Aura expiry failed', error); }
     try { await retryMessageSync(env); } catch (error) { console.warn('Message sync retry failed', error?.name); }
     try {
-      await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
       await sendClosureNotifications(env);
     } catch (error) { console.warn('Closure notice retry failed', error?.name); }
   }

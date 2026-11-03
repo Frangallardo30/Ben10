@@ -14,9 +14,9 @@ function database() {
 function cast(db, user, choice, hasRole) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.prepare(UPSERT_VOTE_SQL).run('proposal', user, choice, 'proposal');
-    if (hasRole) db.prepare(UPSERT_ROLE_VOTE_SQL).run('proposal', user, choice, 'proposal');
-    else db.prepare(REMOVE_ROLE_VOTE_SQL).run('proposal', user);
+    db.prepare(UPSERT_VOTE_SQL).run('proposal', user, choice, 'proposal', null);
+    if (hasRole) db.prepare(UPSERT_ROLE_VOTE_SQL).run('proposal', user, choice, 'proposal', null);
+    else db.prepare(REMOVE_ROLE_VOTE_SQL).run('proposal', user, null);
     db.prepare(CLOSE_PROPOSAL_SQL).run('proposal', 'proposal', 'proposal', 'proposal', 'proposal');
     db.exec('COMMIT');
   } catch (error) {

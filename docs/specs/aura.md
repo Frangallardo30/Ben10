@@ -10,6 +10,16 @@ La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol
 
 Si no se alcanza un resultado, vence a las 24 horas sin cambiar el aura. El cron revisa las propuestas cada cinco minutos y marca las vencidas; un voto después del plazo tampoco cuenta aunque el cron aún no haya corrido. El lote de voto comprueba el vencimiento con el reloj de D1 al ejecutarse, antes de guardar el voto y resolver el cierre; si ya venció, no puede aprobarse ni reabrirse. El bot intenta quitar los botones del mensaje original y vuelve a intentarlo si Discord falla. Las propuestas creadas antes de guardar el ID del mensaje pueden quedar con botones visibles si nadie interactuó con ellas; al pulsarlos, el bot muestra que la votación venció.
 
+## Respuestas a interacciones
+
+Después de verificar la firma, `/aura`, `/perfil` y `/historial` reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` responde directamente porque no consulta la base. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.
+
+La preparación de tablas y la migración de votos se comparten una vez por binding de D1 en cada instancia del Worker, antes de las escrituras. Un fallo permite reintentar la preparación. Las consultas de perfil e historial no esperan esta migración.
+
+La propuesta usa el ID de la interacción de creación; una entrega repetida de la misma interacción conserva una única propuesta. D1 guarda los IDs de votos procesados en `vote_interactions` dentro del mismo lote que el voto: repetir una entrega no vuelve a aplicarla ni deshace un cambio posterior de voto o de rol. Ejecutar un comando nuevo con otro ID sigue siendo una propuesta nueva.
+
+El trabajo en segundo plano tiene un plazo de veinte segundos para informar un fallo o resultado incierto. El timeout no cancela una escritura ya enviada a D1; puede completarse después. En ese caso se recomienda consultar `/perfil` antes de repetir el comando. La entrega del resultado requiere que Discord acepte el webhook de la interacción y está sujeta a los límites de ejecución del Worker. No se repiten automáticamente escrituras con un ID nuevo.
+
 ## Sincronización del mensaje
 
 Los votos válidos se confirman sin editar el mensaje desde la respuesta de la interacción. El lote de D1 guarda también una revisión pendiente en `proposal_message_sync`. El Durable Object `ProposalMessageSync`, enlazado como `MESSAGE_SYNC` y separado por ID de propuesta, es el único que edita el mensaje de la votación. Procesa las ediciones en serie y consulta en una sola lectura de D1 el estado, ambos recuentos y la revisión. Si llegan votos durante una edición, vuelve a leer y publica la revisión nueva después de terminar la anterior. Así una respuesta antigua de un voto no puede restaurar los botones de una votación ya cerrada en el mensaje.

@@ -43,3 +43,7 @@ CREATE TABLE IF NOT EXISTS proposal_message_sync (
   synced_revision INTEGER NOT NULL DEFAULT 0,
   retry_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS vote_interactions (
+  interaction_id TEXT PRIMARY KEY,
+  proposal_id TEXT NOT NULL
+);

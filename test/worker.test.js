@@ -3,6 +3,9 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import test from 'node:test';
 import worker from '../src/index.js';
 import { LocalD1, messageSyncBinding } from '../test-support/local-d1.js';
+import { completionFor, installInteractionWebhooks, mockDiscord } from '../test-support/discord.js';
+installInteractionWebhooks();
+let nextInteractionId = 10000;
 import { readProposalMessage } from '../src/message-sync.js';
 import { QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from '../src/notifications.js';
 import { AURA_VOTER_ROLE_ID } from '../src/voting.js';
@@ -12,6 +15,9 @@ const publicHex = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32
 
 async function interaction(env, data) {
   env.MESSAGE_SYNC ??= messageSyncBinding(env);
+  env.DISCORD_APPLICATION_ID ??= '1417570023370653836';
+  data = { id: String(nextInteractionId++), ...data };
+  data.token ??= `local-interaction-${data.id}`;
   const body = JSON.stringify(data);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signature = sign(null, Buffer.from(timestamp + body), privateKey).toString('hex');
@@ -21,9 +27,19 @@ async function interaction(env, data) {
     headers: { 'X-Signature-Ed25519': signature, 'X-Signature-Timestamp': timestamp },
     body
   }), env, { waitUntil(promise) { background.push(promise); } });
-  await Promise.all(background);
+  for (let i = 0; i < background.length; i++) await background[i];
   assert.equal(response.status, 200);
-  return response.json();
+  const initial = await response.json();
+  const completion = completionFor(data.token);
+  if (initial.type === 5) {
+    assert.ok(completion, 'deferred command must complete its webhook response');
+    // Aura's final interactive view is rendered from D1 by the synchronizer.
+    const body = data.data.name === 'aura' && completion.embeds?.length
+      ? (await readProposalMessage(env.DB, data.id)).body : completion;
+    return { type: 4, data: body };
+  }
+  if (initial.type === 6 && completion) return { type: 4, data: completion };
+  return initial;
 }
 
 // Check the ACK separately; render assertions below inspect the saved snapshot,
@@ -125,7 +141,7 @@ test('el cron caduca solo abiertas vencidas y reintenta quitar botones', async (
     ['future', now + 3600, 'open', '456'], ['approved', now - 1, 'approved', '789']
   ]) insert.run(id, 'guild-1', 'channel-1', message, 'fran', 'other', 100, 'Motivo', deadline, status);
   const patches = [];
-  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+  mockDiscord(t, async (_url, options) => {
     if (options.method === 'PUT') return Response.json([]);
     if (options.method === 'GET') return Response.json([]);
     assert.equal(options.method, 'PATCH');
@@ -222,7 +238,7 @@ for (const status of ['approved', 'rejected']) {
     const DB = new LocalD1();
     const env = { DB, DISCORD_BOT_TOKEN: 'test-only' };
     const posted = [];
-    t.mock.method(globalThis, 'fetch', async (url, options) => {
+    mockDiscord(t, async (url, options) => {
       assert.equal(url, 'https://discord.com/api/v10/channels/channel/messages');
       assert.equal(options.method, 'POST');
       posted.push(JSON.parse(options.body));
@@ -252,7 +268,7 @@ test('avisos: reintenta un 429 y no repite entregas ambiguas ni tras reinicio', 
   const env = { DB, DISCORD_BOT_TOKEN: 'test-only' };
   let calls = 0;
   let mode = 'rate-limit';
-  t.mock.method(globalThis, 'fetch', async () => {
+  mockDiscord(t, async () => {
     calls++;
     if (mode === 'rate-limit') return Response.json({ retry_after: 10 }, { status: 429 });
     if (mode === 'lost-response') throw new TypeError('Connection lost after creation');
@@ -294,8 +310,8 @@ test('el voto decisivo crea y envía el aviso; migra D1 sin anunciar cierres ant
   const DB = new LocalD1();
   const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
   const posted = [];
-  t.mock.method(globalThis, 'fetch', async (_url, options) => {
-    posted.push(JSON.parse(options.body));
+  mockDiscord(t, async (_url, options) => {
+    if (options.method === 'POST') posted.push(JSON.parse(options.body));
     return Response.json({ id: 'new-notice' });
   });
   try {
@@ -325,7 +341,7 @@ test('votos simultáneos del mismo usuario y cierre: ACKs sin ediciones y una so
   const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
   const edits = [];
   const notices = [];
-  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+  mockDiscord(t, async (_url, options) => {
     const body = JSON.parse(options.body);
     if (options.method === 'PATCH') edits.push(body);
     else notices.push(body);
@@ -350,7 +366,7 @@ test('votos simultáneos del mismo usuario y cierre: ACKs sin ediciones y una so
     assert.ok(responses.some((response) => response.type === 6));
     for (const response of responses.reverse()) {
       if (response.type === 6) assert.deepEqual(response, { type: 6 });
-      else assert.deepEqual(response, { type: 4, data: { content: 'La votación ya cerró.', flags: 64 } });
+      else assert.deepEqual(response, { type: 4, data: { content: 'La votación ya cerró.', flags: 64, allowed_mentions: { parse: [] } } });
     }
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE proposal_id = ?').get(id).n, 4);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM role_votes WHERE proposal_id = ?').get(id).n, 4);

@@ -63,8 +63,8 @@ try {
     timer.unref();
   })]);
   const decisiveVote = () => db.batch([
-    db.prepare(UPSERT_VOTE_SQL).bind('proposal', 'last', 'yes', 'proposal'),
-    db.prepare(UPSERT_ROLE_VOTE_SQL).bind('proposal', 'last', 'yes', 'proposal'),
+    db.prepare(UPSERT_VOTE_SQL).bind('proposal', 'last', 'yes', 'proposal', null),
+    db.prepare(UPSERT_ROLE_VOTE_SQL).bind('proposal', 'last', 'yes', 'proposal', null),
     db.prepare(CLOSE_PROPOSAL_SQL).bind('proposal', 'proposal', 'proposal', 'proposal', 'proposal'),
     db.prepare(QUEUE_MESSAGE_SYNC_SQL).bind('proposal')
   ]);

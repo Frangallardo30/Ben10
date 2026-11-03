@@ -22,8 +22,8 @@ function deferred() {
 
 async function cast(env, user, choice) {
   await env.DB.batch([
-    env.DB.prepare(UPSERT_VOTE_SQL).bind('proposal', user, choice, 'proposal'),
-    env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind('proposal', user, choice, 'proposal'),
+    env.DB.prepare(UPSERT_VOTE_SQL).bind('proposal', user, choice, 'proposal', null),
+    env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind('proposal', user, choice, 'proposal', null),
     env.DB.prepare(CLOSE_PROPOSAL_SQL).bind('proposal', 'proposal', 'proposal', 'proposal', 'proposal'),
     env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind('proposal')
   ]);

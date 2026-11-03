@@ -5,6 +5,7 @@ Cada pedido nuevo o corrección obtiene una tarea `B10-nnn` basada en [`docs/tas
 1. Leer el código, la spec y las tareas relacionadas. Escribir criterios observables; marcar la tarea `En curso`.
 2. Implementar el cambio y actualizar la spec si cambia el comportamiento. Si surge un problema distinto, abrir otra tarea en lugar de ocultarlo.
 3. Realizar las comprobaciones relevantes según `AGENTS.md`; anotar comandos, resultados y límites reales. No marcar casillas que solo se infieren.
-4. Revisar el diff y el índice. Marcar `Hecha` cuando los criterios y la validación requeridos estén completos; si queda una comprobación pendiente, reflejarlo en el estado y la tarea.
+4. Revisar el diff y el índice. Marcar `Hecha` cuando los criterios y la validación requeridos estén completos; si queda una comprobación pendiente, reflejarlo en el estado y la tarea. Al cerrarla, mover el archivo a `docs/tasks/complete/` y actualizar su enlace en el índice y cualquier otra referencia, incluyendo enlaces relativos dentro del archivo movido. Mantener el registro en el índice con estado `Hecha`.
+5. Si se reabre una tarea, devolver su archivo a `docs/tasks/`, marcarla `En curso` y actualizar los enlaces. Conservar el ID; para tareas nuevas, usar el siguiente ID libre considerando también las archivadas.
 
 Para una auditoría, comparar código, spec, pruebas y funcionamiento observado. Registrar cada hallazgo accionable como una tarea con prioridad y condición de cierre.

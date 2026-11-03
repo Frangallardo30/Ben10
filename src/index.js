@@ -1,3 +1,4 @@
+import { INSERT_PROPOSAL_SQL, RECORD_CREATION_ATTEMPT_SQL } from './proposals.js';
 import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, OperationalError, reportFailure } from './diagnostics.js';
 import { historyDateExpression } from './proposal-dates.js';
 import { prepareWrites } from './database.js';
@@ -86,7 +87,7 @@ async function ensureCommandsRegistered(env) {
     return;
   }
   await prepareWrites(env.DB);
-  const version = 'aura-profile-history-info-ranking-stats-v6';
+  const version = 'aura-profile-history-info-ranking-stats-votaciones-v7';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
   if (saved?.value === version) {
@@ -127,9 +128,10 @@ async function command(interaction, env, ctx) {
         description: 'Postulá cambios de aura, votá con tus amigos y consultá los resultados.',
         color: 0xff9c53,
         fields: [
-          { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo.', inline: false },
+          { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo. No se repite el mismo motivo para esa persona mientras haya una propuesta abierta sin vencer.', inline: false },
           { name: '👤 /perfil', value: 'Muestra aura, propuestas recibidas aprobadas/rechazadas, votos registrados y evolución por fecha de creación. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
+          { name: '📋 /votaciones', value: 'Lista todas las propuestas recibidas por `usuario` (o por vos), con estado y proponente. Incluye abiertas, aprobadas, rechazadas, vencidas y canceladas; 8 por página.', inline: false },
           { name: '🏆 /ranking', value: 'Muestra las 10 personas con más aura de este servidor. Solo cuentan los cambios aprobados; los empates comparten puesto.', inline: false },
           { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
@@ -151,6 +153,34 @@ async function command(interaction, env, ctx) {
         description: lines.length ? lines.join('\n') : 'Todavía no hay cambios de aura aprobados en este servidor.',
         color: 0xff9c53,
         footer: { text: 'Top 10 del servidor · Empates: mismo puesto y orden por ID de usuario.' }
+      }]
+    } });
+  }
+  if (interaction.data.name === 'votaciones') {
+    const user = option(interaction, 'usuario') ?? actor(interaction);
+    const page = option(interaction, 'pagina') ?? 1;
+    const count = await env.DB.prepare('SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ?')
+      .bind(interaction.guild_id, user).first();
+    const total = count.total;
+    const pages = Math.max(1, Math.ceil(total / 8));
+    if (page > pages) return ephemeral(`Ese perfil tiene ${pages} página${pages === 1 ? '' : 's'} de votaciones.`);
+    const date = await historyDateExpression(env.DB);
+    const rows = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at,
+      CASE WHEN status = 'open' AND expires_at <= unixepoch() THEN 'expired' ELSE status END AS effective_status
+      FROM proposals WHERE guild_id = ? AND target_id = ? ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`)
+      .bind(interaction.guild_id, user, (page - 1) * 8).all();
+    const states = { approved: '✅ Aprobada', rejected: '❌ Rechazada', open: '🗳️ Abierta', expired: '⌛ Vencida', cancelled: '⚪ Cancelada' };
+    const entries = rows.results.map((item) => {
+      const reason = item.reason.replace(/\s+/g, ' ').trim().slice(0, 250);
+      return `**${states[item.effective_status] ?? 'Estado desconocido'}** · Propuesta de **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+    });
+    return reply({ type: 4, data: {
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        title: '📋 Historial de votaciones',
+        description: `**Propuestas recibidas por <@${user}>**\n\n${entries.length ? entries.join('\n\n') : 'Todavía no hay propuestas para esta persona en el servidor.'}`,
+        color: 0xff9c53,
+        footer: { text: `Página ${page} de ${pages} · ${formatNumber(total)} propuestas · Solo las aprobadas cambian el aura.` }
       }]
     } });
   }
@@ -224,8 +254,19 @@ async function command(interaction, env, ctx) {
   await prepareWrites(env.DB);
   const createdAt = Math.floor(Date.now() / 1000);
   const proposal = { id: interaction.id, guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, created_at: createdAt, expires_at: createdAt + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
-  await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.created_at, proposal.expires_at).run();
-  return reply({ type: 4, data: (await readProposalMessage(env.DB, proposal.id)).body });
+  const creation = await env.DB.batch([
+    env.DB.prepare(INSERT_PROPOSAL_SQL).bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id,
+      proposal.proposer_id, amount, reason, proposal.created_at, proposal.expires_at, proposal.id, proposal.guild_id, proposal.target_id, reason),
+    env.DB.prepare(RECORD_CREATION_ATTEMPT_SQL).bind(proposal.id)
+  ]);
+  const saved = await readProposalMessage(env.DB, proposal.id);
+  if (!saved) {
+    diagnostic('info', 'PROPOSAL_DUPLICATE', 'validation');
+    return ephemeral(creation[1].meta.changes === 0
+      ? 'Esta solicitud ya fue rechazada por duplicado. Si la votación anterior ya cerró, creá una propuesta nueva.'
+      : 'Ya hay una votación abierta para esa persona con el mismo motivo. Esperá a que cierre o consultá /votaciones.');
+  }
+  return reply({ type: 4, data: saved.body });
 }
 
 async function vote(interaction, env, ctx) {
@@ -362,10 +403,14 @@ export default {
         return reply({ type: 1 });
       }
       if (interaction.type === 2) {
-        if (!['aura', 'perfil', 'historial', 'ranking', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
+        if (!['aura', 'perfil', 'historial', 'votaciones', 'ranking', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
         checkCommandsInBackground(env, ctx);
         if (interaction.data.name === 'info') return command(interaction, env, ctx);
         if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+        if (interaction.data.name === 'votaciones') {
+          const page = option(interaction, 'pagina') ?? 1;
+          if (!Number.isInteger(page) || page < 1 || page > 1000000) return ephemeral('Elegí una página entera entre 1 y 1000000.');
+        }
         if (interaction.data.name === 'aura') {
           const amount = option(interaction, 'puntos');
           const reason = String(option(interaction, 'motivo') ?? '').trim();

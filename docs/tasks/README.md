@@ -17,8 +17,8 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-011](B10-011.md) | Avisar al cerrar una votación | En curso | Media |
 | [B10-012](B10-012.md) | Añadir ranking de aura | En curso | Media |
 | [B10-013](complete/B10-013.md) | Añadir estadísticas personales | Hecha | Media |
-| [B10-014](B10-014.md) | Consultar historial de votaciones | Pendiente | Media |
-| [B10-015](B10-015.md) | Evitar propuestas duplicadas | Pendiente | Media |
+| [B10-014](B10-014.md) | Consultar historial de votaciones | En curso | Media |
+| [B10-015](complete/B10-015.md) | Evitar propuestas duplicadas | Hecha | Media |
 | [B10-016](B10-016.md) | Configurar el bot por servidor | Pendiente | Alta |
 | [B10-017](B10-017.md) | Panel de moderación | Pendiente | Alta |
 | [B10-018](B10-018.md) | Recuperar /info e /historial en Discord | En curso | Alta |

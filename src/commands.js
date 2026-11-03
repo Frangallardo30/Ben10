@@ -11,6 +11,10 @@ export const commands = [
     { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false },
     { type: 4, name: 'pagina', description: 'Página del historial (8 movimientos por página)', required: false, min_value: 1 }
   ] },
+  { name: 'votaciones', description: 'Muestra todas las propuestas de aura recibidas y su estado', options: [
+    { type: 6, name: 'usuario', description: 'Persona que recibe las propuestas', required: false },
+    { type: 4, name: 'pagina', description: 'Página del historial (8 propuestas por página)', required: false, min_value: 1, max_value: 1000000 }
+  ] },
   { name: 'ranking', description: 'Muestra las 10 personas con más aura del servidor' },
   { name: 'info', description: 'Explica los comandos y las reglas de votación de Ben 10' }
 ];

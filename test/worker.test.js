@@ -641,6 +641,7 @@ test('el registro automático incorpora ranking y repara una lista que no lo tie
     await worker.scheduled({}, env);
     assert.equal(writes.length, 2);
     assert.ok(writes.every((list) => list.some((command) => command.name === 'ranking')));
+    assert.ok(writes.every((list) => list.some((command) => command.name === 'votaciones')));
   } finally { DB.close(); }
 });
 
@@ -689,5 +690,163 @@ test('estadísticas personales funcionan sin movimientos y con fechas heredadas 
       .run('legacy', 'guild-1', 'channel', 'target', 'creator', -10, 'Legacy', 86500, 'approved');
     const legacy = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
     assert.equal(legacy.data.embeds[0].fields.find((field) => field.name.includes('Evolución')).value, '<t:100:d> · -10 → **-10** puntos');
+  } finally { DB.close(); }
+});
+
+test('votaciones muestra todos los estados recibidos y no modifica propuestas ni aura', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const now = Math.floor(Date.now() / 1000);
+  const insert = DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  try {
+    for (const [i, status] of ['approved', 'rejected', 'open', 'expired', 'cancelled'].entries()) {
+      insert.run(status, 'guild-1', 'channel', 'target', 'creator', 100, status, now - i, now + 86400, status);
+    }
+    insert.run('past-open', 'guild-1', 'channel', 'target', 'creator', -100, 'Plazo pasado', now - 10, now - 1, 'open');
+    insert.run('foreign', 'guild-2', 'channel', 'target', 'creator', 999, 'Otro servidor', now, now + 86400, 'approved');
+    insert.run('created-by-target', 'guild-1', 'channel', 'other', 'target', 999, 'Creada por la persona', now, now + 86400, 'approved');
+    const before = DB.db.prepare('SELECT * FROM proposals ORDER BY id').all();
+    const result = await interaction(env, { ...base('target'), type: 2, data: { name: 'votaciones' } });
+    const description = result.data.embeds[0].description;
+    for (const state of ['Aprobada', 'Rechazada', 'Abierta', 'Vencida', 'Cancelada']) assert.match(description, new RegExp(state));
+    assert.match(description, /Propuestas recibidas por <@target>/);
+    assert.match(description, /Propuesto por <@creator>/);
+    assert.doesNotMatch(description, /Otro servidor|Creada por la persona/);
+    assert.match(result.data.embeds[0].footer.text, /6 propuestas/);
+    assert.deepEqual(result.data.allowed_mentions, { parse: [] });
+    assert.deepEqual(DB.db.prepare('SELECT * FROM proposals ORDER BY id').all(), before);
+    assert.equal(DB.db.prepare("SELECT SUM(amount) AS aura FROM proposals WHERE guild_id = 'guild-1' AND target_id = 'target' AND status = 'approved'").get().aura, 100);
+    const other = await interaction(env, { ...base('reader'), type: 2, data: { name: 'votaciones', options: [{ name: 'usuario', value: 'target' }] } });
+    assert.equal(other.data.embeds[0].description, description);
+    const info = await interaction(env, { ...base('reader'), type: 2, data: { name: 'info' } });
+    assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/votaciones')));
+  } finally { DB.close(); }
+});
+
+test('votaciones pagina de forma estable y respeta límites incluso con motivos largos', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (let i = 0; i < 10; i++) {
+      DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(String(i), 'guild-1', 'channel', 'target', '100000000000000000', 1000, `row-${i} ${'x'.repeat(250)}`, 100, 86500, 'rejected');
+    }
+    const get = (page) => interaction(env, { ...base('target'), type: 2, data: { name: 'votaciones', options: [{ name: 'pagina', value: page }] } });
+    const first = await get(1);
+    const second = await get(2);
+    assert.match(first.data.embeds[0].description, /row-9[\s\S]*row-2/);
+    assert.doesNotMatch(first.data.embeds[0].description, /row-1|row-0/);
+    assert.match(second.data.embeds[0].description, /row-1[\s\S]*row-0/);
+    assert.match(second.data.embeds[0].footer.text, /Página 2 de 2/);
+    assert.ok(first.data.embeds[0].description.length <= 4096);
+    const out = await get(3);
+    assert.match(out.data.content, /2 páginas de votaciones/);
+    for (const page of [0, -1, 1.5, 1000001]) assert.match((await get(page)).data.content, /página entera/);
+  } finally { DB.close(); }
+});
+
+test('votaciones funciona vacío, con fechas heredadas y sin acceso entre servidores', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    DB.db.exec('DROP INDEX IF EXISTS proposals_history; ALTER TABLE proposals DROP COLUMN created_at');
+    const empty = await interaction(env, { ...base('target'), type: 2, data: { name: 'votaciones' } });
+    assert.match(empty.data.embeds[0].description, /Todavía no hay propuestas/);
+    DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('legacy', 'guild-1', 'channel', 'target', 'creator', 100, 'Heredada', 86500, 'approved');
+    const legacy = await interaction(env, { ...base('target'), type: 2, data: { name: 'votaciones' } });
+    assert.match(legacy.data.embeds[0].description, /<t:100:d>/);
+    const foreign = await interaction(env, { ...base('target'), guild_id: 'guild-2', type: 2, data: { name: 'votaciones' } });
+    assert.match(foreign.data.embeds[0].description, /Todavía no hay propuestas/);
+    const dm = await interaction(env, { user: { id: 'target' }, type: 2, data: { name: 'votaciones' } });
+    assert.equal(dm.data.flags, 64);
+    assert.match(dm.data.content, /dentro de un servidor/);
+    assert.equal(DB.db.prepare('PRAGMA table_info(proposals)').all().some((column) => column.name === 'created_at'), false);
+  } finally { DB.close(); }
+});
+
+function duplicateInput(id, overrides = {}) {
+  return { ...base('creator'), id, type: 2, data: { name: 'aura', options: [
+    { name: 'usuario', value: overrides.target ?? 'target' }, { name: 'puntos', value: overrides.amount ?? 100 },
+    { name: 'motivo', value: overrides.reason ?? 'Mismo motivo' }
+  ] }, ...overrides.interaction };
+}
+
+test('duplicados se bloquean por destinatario, servidor y motivo exacto sin importar autor, canal o puntos', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    await interaction(env, duplicateInput('first'));
+    const duplicate = await interaction(env, duplicateInput('second', { reason: '  Mismo motivo  ', amount: -100,
+      interaction: { ...base('other'), channel_id: 'another-channel' } }));
+    assert.match(duplicate.data.content, /Ya hay una votación abierta/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 1);
+    assert.equal(DB.db.prepare('SELECT amount FROM proposals').get().amount, 100);
+    const replay = await interaction(env, duplicateInput('first'));
+    assert.match(replay.data.embeds[0].description, /Mismo motivo/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 1);
+    await interaction(env, duplicateInput('other-guild', { interaction: { guild_id: 'guild-2' } }));
+    await interaction(env, duplicateInput('other-target', { target: 'someone-else' }));
+    await interaction(env, duplicateInput('other-reason', { reason: 'Otro motivo' }));
+    await interaction(env, duplicateInput('different-case', { reason: 'mismo motivo' }));
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 5);
+  } finally { DB.close(); }
+});
+
+for (const status of ['approved', 'rejected', 'expired', 'cancelled', 'past-open']) {
+  test(`una propuesta ${status} no bloquea otra con la misma clave`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      await interaction(env, duplicateInput('old'));
+      if (status === 'past-open') DB.db.exec("UPDATE proposals SET expires_at = 0 WHERE id = 'old'");
+      else DB.db.prepare("UPDATE proposals SET status = ? WHERE id = 'old'").run(status);
+      const fresh = await interaction(env, duplicateInput('new'));
+      assert.ok(fresh.data.embeds);
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 2);
+      assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'old'").get().status, status === 'past-open' ? 'open' : status);
+    } finally { DB.close(); }
+  });
+}
+
+test('dos creaciones concurrentes generan una propuesta y una advertencia explícita', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const results = await Promise.all([interaction(env, duplicateInput('parallel-a')), interaction(env, duplicateInput('parallel-b'))]);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 1);
+    assert.equal(results.filter((result) => result.data.embeds).length, 1);
+    assert.equal(results.filter((result) => result.data.content?.includes('Ya hay una votación abierta')).length, 1);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0);
+  } finally { DB.close(); }
+});
+
+test('reentregar una creación rechazada por duplicado no crea otra después del cierre', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    await interaction(env, duplicateInput('first'));
+    await interaction(env, duplicateInput('blocked'));
+    DB.db.exec("UPDATE proposals SET status = 'cancelled' WHERE id = 'first'");
+    const replay = await interaction(env, duplicateInput('blocked'));
+    assert.ok(replay.data.content);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 1);
+    const fresh = await interaction(env, duplicateInput('fresh'));
+    assert.ok(fresh.data.embeds);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 2);
+  } finally { DB.close(); }
+});
+
+test('las propuestas duplicadas heredadas se conservan y no permiten una tercera', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const insert = DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    for (const id of ['old-a', 'old-b']) insert.run(id, 'guild-1', 'channel', 'target', 'creator', 100, 'Mismo motivo', Math.floor(Date.now() / 1000) + 86400);
+    DB.db.exec("INSERT INTO votes VALUES ('old-a', 'voter', 'yes')");
+    const result = await interaction(env, duplicateInput('third'));
+    assert.match(result.data.content, /Ya hay una votación abierta/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 2);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 1);
   } finally { DB.close(); }
 });

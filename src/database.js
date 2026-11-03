@@ -1,3 +1,4 @@
+import { CREATION_ATTEMPTS_SCHEMA_SQL, DUPLICATE_INDEX_SQL } from './proposals.js';
 import { diagnosticDatabase } from './diagnostics.js';
 import { migrateProposalDates } from './proposal-dates.js';
 import { MESSAGE_SYNC_SCHEMA_SQL } from './message-sync.js';
@@ -29,7 +30,9 @@ async function prepare(db) {
     db.prepare("CREATE TABLE IF NOT EXISTS role_votes (proposal_id TEXT NOT NULL, user_id TEXT NOT NULL, choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')), PRIMARY KEY(proposal_id, user_id))"),
     db.prepare(MESSAGE_SYNC_SCHEMA_SQL),
     db.prepare(NOTIFICATION_SCHEMA_SQL),
-    db.prepare(VOTE_INTERACTIONS_SCHEMA_SQL)
+    db.prepare(VOTE_INTERACTIONS_SCHEMA_SQL),
+    db.prepare(DUPLICATE_INDEX_SQL),
+    db.prepare(CREATION_ATTEMPTS_SCHEMA_SQL)
   ]);
   await db.batch([
     db.prepare("INSERT OR IGNORE INTO role_votes(proposal_id, user_id, choice) SELECT v.proposal_id, v.user_id, v.choice FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.status = 'open' AND EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),

@@ -121,11 +121,30 @@ try {
   const ranking = events.find((event) => event.url.includes('runtime-ranking')).body;
   assert.equal(ranking.embeds[0].description, '**1.** <@target> · **100** puntos');
   assert.deepEqual(ranking.allowed_mentions, { parse: [] });
+  assert.deepEqual(await dispatch({ id: '100023', token: 'runtime-votaciones', type: 2,
+    member: { user: { id: 'target' } }, data: { name: 'votaciones' } }), { type: 5 });
+  await until(() => events.some((event) => event.url.includes('runtime-votaciones') && event.body?.embeds?.[0]?.title.includes('votaciones')));
+  const votingHistory = events.find((event) => event.url.includes('runtime-votaciones')).body;
+  assert.match(votingHistory.embeds[0].description, /Cancelada/);
+  assert.match(votingHistory.embeds[0].description, /Aprobada/);
+  assert.match(votingHistory.embeds[0].footer.text, /2 propuestas/);
+  assert.deepEqual(votingHistory.allowed_mentions, { parse: [] });
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposals').first()).n, 2);
   const info = await dispatch({ id: '100022', token: 'runtime-info', type: 2, data: { name: 'info' } });
   assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/ranking')));
+  assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/votaciones')));
   assert.ok(events.some((event) => event.url.includes('/applications/') && event.method === 'PUT' && event.body.some((command) => command.name === 'ranking')));
+  const concurrent = { ...aura, data: { ...aura.data, options: aura.data.options.map((option) => option.name === 'motivo' ? { ...option, value: 'Concurrent duplicate' } : option) } };
+  const parallel = await Promise.all([
+    dispatch({ ...concurrent, id: '100030', token: 'runtime-duplicate-a' }),
+    dispatch({ ...concurrent, id: '100031', token: 'runtime-duplicate-b' })
+  ]);
+  assert.deepEqual(parallel, [{ type: 5 }, { type: 5 }]);
+  await until(() => events.some((event) => event.url.includes('runtime-duplicate-') && event.body?.content?.includes('Ya hay una votación abierta')));
+  await until(() => messageEdits().some((event) => event.body.embeds[0].description.includes('Concurrent duplicate')));
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposals WHERE reason = ?').bind('Concurrent duplicate').first()).n, 1);
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));
-  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking on D1 and Durable Objects, and handles retries, cancellation and D1 failure. Discord mocked; no remote requests.');
+  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking/votaciones on D1 and Durable Objects, and handles concurrent duplicate creation, retries, cancellation and D1 failure. Discord mocked; no remote requests.');
 } finally { await runtime.dispose(); }

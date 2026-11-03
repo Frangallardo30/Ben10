@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   expires_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open'
 );
+CREATE INDEX IF NOT EXISTS proposals_duplicates ON proposals(guild_id, target_id, reason, expires_at) WHERE status = 'open';
 CREATE INDEX IF NOT EXISTS proposals_due ON proposals(status, expires_at);
 CREATE TABLE IF NOT EXISTS votes (
   proposal_id TEXT NOT NULL,
@@ -47,4 +48,7 @@ CREATE TABLE IF NOT EXISTS proposal_message_sync (
 CREATE TABLE IF NOT EXISTS vote_interactions (
   interaction_id TEXT PRIMARY KEY,
   proposal_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proposal_creation_attempts (
+  interaction_id TEXT PRIMARY KEY
 );

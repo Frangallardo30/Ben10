@@ -166,7 +166,7 @@ test('perfil e historial no preparan tablas; las escrituras preparan una sola ve
     if (statements.some((statement) => statement.sql.startsWith('CREATE TABLE'))) preparations++;
     return batch(statements);
   };
-  for (const name of ['perfil', 'historial', 'ranking']) {
+  for (const name of ['perfil', 'historial', 'votaciones', 'ranking']) {
     const attempt = await start(env, { type: 2, data: { name } });
     await attempt.flush();
   }

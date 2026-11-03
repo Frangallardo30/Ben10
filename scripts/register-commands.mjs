@@ -7,4 +7,4 @@ const response = await fetch(`https://discord.com/api/v10/applications/${appId}/
   method: 'PUT', headers: { Authorization: `Bot ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(commands)
 });
 if (!response.ok) throw new Error(`Discord devolvió ${response.status}`);
-console.log('Comandos /aura, /perfil, /historial, /ranking y /info registrados.');
+console.log('Comandos /aura, /perfil, /historial, /votaciones, /ranking y /info registrados.');

@@ -1,3 +1,4 @@
+import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, reportFailure } from './diagnostics.js';
 // A claimed delivery is never automatically reclaimed: after a lost response,
 // Discord may already have created the message. Prefer a missing notice to a duplicate.
 export const NOTIFICATION_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS proposal_notifications (
@@ -11,6 +12,7 @@ export const QUEUE_NOTIFICATION_SQL = `INSERT OR IGNORE INTO proposal_notificati
   SELECT id FROM proposals WHERE id = ? AND status IN ('approved', 'rejected')`;
 
 export async function sendClosureNotifications(env, proposalId) {
+  env = { ...env, DB: diagnosticDatabase(env.DB) };
   if (!env.DISCORD_BOT_TOKEN) return;
   const pending = await env.DB.prepare(`SELECT p.* FROM proposals p
     JOIN proposal_notifications n ON n.proposal_id = p.id
@@ -27,13 +29,14 @@ export async function sendClosureNotifications(env, proposalId) {
       const content = approved
         ? `✅ Propuesta aprobada: <@${proposal.target_id}> recibe ${proposal.amount > 0 ? '+' : ''}${proposal.amount} puntos de aura.`
         : `❌ Propuesta rechazada para <@${proposal.target_id}>. Su aura no cambia.`;
-      const response = await fetch(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages`, {
+      const response = await discordRequest(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages`, {
         method: 'POST',
         headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
         body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
       });
       if (response.status === 429) {
-        const data = await response.json();
+        diagnostic('warn', 'DISCORD_NOTICE_RATE_LIMITED', 'discord', 429);
+        const data = await discordJSON(response);
         const delay = Math.max(1, Math.ceil(Number(data.retry_after) || 60));
         await env.DB.prepare(`UPDATE proposal_notifications SET state = 'pending', retry_at = unixepoch() + ? WHERE proposal_id = ?`)
           .bind(delay, proposal.id).run();
@@ -42,15 +45,15 @@ export async function sendClosureNotifications(env, proposalId) {
       if (!response.ok) {
         // 5xx may occur after creation; even a failed delivery must not be reposted blindly.
         await env.DB.prepare("UPDATE proposal_notifications SET state = 'uncertain' WHERE proposal_id = ?").bind(proposal.id).run();
-        console.warn('Closure notice needs review', proposal.id, response.status);
+        diagnostic('warn', 'CLOSURE_NOTICE_REVIEW_REQUIRED', 'discord', response.status);
         continue;
       }
-      const message = await response.json();
+      const message = await discordJSON(response);
       await env.DB.prepare("UPDATE proposal_notifications SET state = 'sent', message_id = ? WHERE proposal_id = ?")
         .bind(message.id ?? null, proposal.id).run();
     } catch (error) {
       // Leave 'sending' durable, including if recording the response failed.
-      console.warn('Closure notice delivery uncertain', proposal.id, error?.name);
+      reportFailure('CLOSURE_NOTICE_UNCERTAIN', error);
     }
   }
 }

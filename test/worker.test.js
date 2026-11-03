@@ -561,3 +561,133 @@ for (const legacy of [false, true]) {
     } finally { DB.close(); }
   });
 }
+
+test('ranking suma aprobadas, separa servidores e incluye aura cero y negativa con empates estables', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  let next = 0;
+  const add = (user, amount, status = 'approved', guild = 'guild-1') => {
+    DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(String(next++), guild, 'channel', user, 'creator', amount, 'Motivo privado', 1, status);
+  };
+  try {
+    add('200', 80); add('200', 20); add('100', 100);
+    add('300', 50); add('300', -50); add('400', -10);
+    for (const status of ['open', 'rejected', 'expired', 'cancelled']) add('not-approved', 1000, status);
+    add('other-guild', 1000, 'approved', 'guild-2');
+    const result = await interaction(env, { ...base('reader'), type: 2, data: { name: 'ranking' } });
+    const lines = result.data.embeds[0].description.split('\n');
+    assert.deepEqual(lines, [
+      '**1.** <@100> · **100** puntos', '**1.** <@200> · **100** puntos',
+      '**3.** <@300> · **0** puntos', '**4.** <@400> · **-10** puntos'
+    ]);
+    assert.deepEqual(result.data.allowed_mentions, { parse: [] });
+    assert.doesNotMatch(lines.join('\n'), /not-approved|other-guild|Motivo privado/);
+    const again = await interaction(env, { ...base('reader'), type: 2, data: { name: 'ranking' } });
+    assert.equal(again.data.embeds[0].description, result.data.embeds[0].description);
+    const other = await interaction(env, { ...base('reader'), guild_id: 'guild-2', type: 2, data: { name: 'ranking' } });
+    assert.match(other.data.embeds[0].description, /other-guild/);
+    assert.doesNotMatch(other.data.embeds[0].description, /<@100>/);
+  } finally { DB.close(); }
+});
+
+test('ranking vacío es claro y no se puede consultar fuera de un servidor', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const empty = await interaction(env, { ...base('reader'), type: 2, data: { name: 'ranking' } });
+    assert.match(empty.data.embeds[0].description, /Todavía no hay cambios de aura aprobados/);
+    const direct = await interaction(env, { user: { id: 'reader' }, type: 2, data: { name: 'ranking' } });
+    assert.equal(direct.data.flags, 64);
+    assert.match(direct.data.content, /dentro de un servidor/);
+    const info = await interaction(env, { ...base('reader'), type: 2, data: { name: 'info' } });
+    assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/ranking')));
+  } finally { DB.close(); }
+});
+
+test('ranking limita a diez entradas con desempate fijo y un embed dentro de los límites', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (let i = 14; i >= 0; i--) {
+      const id = String(100000000000000000n + BigInt(i));
+      DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(id, 'guild-1', 'channel', id, 'creator', 1000, 'Motivo', 1, 'approved');
+    }
+    const result = await interaction(env, { ...base('reader'), type: 2, data: { name: 'ranking' } });
+    const embed = result.data.embeds[0];
+    const lines = embed.description.split('\n');
+    assert.equal(lines.length, 10);
+    assert.match(lines[0], /100000000000000000/);
+    assert.match(lines[9], /100000000000000009/);
+    assert.ok(lines.every((line) => line.startsWith('**1.**')));
+    assert.ok(embed.description.length <= 4096);
+    assert.ok(embed.title.length + embed.description.length + embed.footer.text.length <= 6000);
+  } finally { DB.close(); }
+});
+
+test('el registro automático incorpora ranking y repara una lista que no lo tiene', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_APPLICATION_ID: 'application', DISCORD_BOT_TOKEN: 'test-only' };
+  const writes = [];
+  mockDiscord(t, async (_url, options) => {
+    if (options.method === 'GET') return Response.json([{ type: 1, name: 'info', description: 'Vieja' }]);
+    assert.equal(options.method, 'PUT');
+    writes.push(JSON.parse(options.body));
+    return Response.json([]);
+  });
+  try {
+    await worker.scheduled({}, env);
+    await worker.scheduled({}, env);
+    assert.equal(writes.length, 2);
+    assert.ok(writes.every((list) => list.some((command) => command.name === 'ranking')));
+  } finally { DB.close(); }
+});
+
+test('perfil calcula estadísticas y evolución acumulada solo del servidor y de aprobaciones', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const insert = DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  try {
+    for (const [id, amount, date] of [['a', 100, 100], ['b', -20, 200], ['c', 30, 200], ['d', 40, 300], ['e', -10, 400], ['f', 50, 500]]) {
+      insert.run(id, 'guild-1', 'channel', 'target', 'creator', amount, id, date, date + 86400, 'approved');
+    }
+    for (const status of ['rejected', 'open', 'expired', 'cancelled']) insert.run(status, 'guild-1', 'channel', 'target', 'creator', 999, 'Exclude', 600, 87000, status);
+    insert.run('foreign', 'guild-2', 'channel', 'target', 'creator', 1000, 'Foreign', 700, 87100, 'approved');
+    insert.run('foreign-reject', 'guild-2', 'channel', 'target', 'creator', 1, 'Foreign', 700, 87100, 'rejected');
+    DB.db.exec("INSERT INTO votes VALUES ('a', 'target', 'yes'); INSERT INTO votes VALUES ('rejected', 'target', 'no'); INSERT INTO votes VALUES ('foreign', 'target', 'yes'); INSERT INTO votes VALUES ('a', 'other', 'yes');");
+    const result = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+    const fields = result.data.embeds[0].fields;
+    assert.match(result.data.embeds[0].description, /190 puntos/);
+    assert.equal(fields[0].value, '6');
+    assert.equal(fields.find((field) => field.name.includes('rechazadas')).value, '1');
+    assert.equal(fields.find((field) => field.name.includes('registrados')).value, '2');
+    assert.deepEqual(fields.find((field) => field.name.includes('Evolución')).value.split('\n'), [
+      '<t:200:d> · -20 → **80** puntos', '<t:200:d> · +30 → **110** puntos',
+      '<t:300:d> · +40 → **150** puntos', '<t:400:d> · -10 → **140** puntos', '<t:500:d> · +50 → **190** puntos'
+    ]);
+    assert.deepEqual(result.data.allowed_mentions, { parse: [] });
+    assert.ok(fields.every((field) => field.value.length <= 1024));
+    DB.db.exec("UPDATE votes SET choice = 'no' WHERE proposal_id = 'a' AND user_id = 'target'");
+    const changed = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+    assert.equal(changed.data.embeds[0].fields.find((field) => field.name.includes('registrados')).value, '2');
+    const resolved = await interaction(env, { ...base('other'), type: 2, data: { name: 'perfil', options: [{ name: 'usuario', value: 'target' }] } });
+    assert.equal(resolved.data.embeds[0].fields.find((field) => field.name.includes('Evolución')).value, fields.find((field) => field.name.includes('Evolución')).value);
+  } finally { DB.close(); }
+});
+
+test('estadísticas personales funcionan sin movimientos y con fechas heredadas sin migrar', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    DB.db.exec('DROP INDEX IF EXISTS proposals_history; ALTER TABLE proposals DROP COLUMN created_at');
+    const empty = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+    assert.equal(empty.data.embeds[0].fields.find((field) => field.name.includes('rechazadas')).value, '0');
+    assert.equal(empty.data.embeds[0].fields.find((field) => field.name.includes('registrados')).value, '0');
+    assert.match(empty.data.embeds[0].fields.find((field) => field.name.includes('Evolución')).value, /Todavía no hay/);
+    DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('legacy', 'guild-1', 'channel', 'target', 'creator', -10, 'Legacy', 86500, 'approved');
+    const legacy = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+    assert.equal(legacy.data.embeds[0].fields.find((field) => field.name.includes('Evolución')).value, '<t:100:d> · -10 → **-10** puntos');
+  } finally { DB.close(); }
+});

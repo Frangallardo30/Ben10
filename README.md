@@ -2,7 +2,7 @@
 
 Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Workers para recibir comandos y botones, Cloudflare D1 para guardar las propuestas y los votos, y un Durable Object por propuesta para sincronizar las ediciones del mensaje. No necesita un proceso encendido todo el día ni una clave de YouTube.
 
-Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
+Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para consultar logs y recuperar el servicio después de rotar el token, usá la [guía de operación](docs/operations/cloudflare.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
 
 El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md). Cada tarea usa la [plantilla](docs/tasks/TEMPLATE.md) compartida con FrangaFlix. Las [pautas para trabajar con Codex](.codex/README.md) y la [especificación vigente](docs/specs/README.md) acompañan ese seguimiento.
 
@@ -12,8 +12,9 @@ El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md).
 - Todos pueden votar y sus votos aparecen en el recuento. Los votos de miembros con el rol `1431791263547392121` también aparecen en un recuento separado. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
 - La votación se cierra con **cuatro votos iguales del rol** si esa opción empata o lidera el total general. Si va perdiendo en el total, necesita **seis votos iguales del rol** para imponerse. Los votos del resto siempre cuentan en el total y pueden cambiar cuándo se alcanza el cierre. Si no hay resultado, vence a las 24 horas sin cambiar el aura.
 - Quien creó una propuesta puede retirarla con **Cancelar propuesta** mientras siga abierta. La cancelación conserva los votos y no cambia el aura.
-- `/perfil usuario:@Fran` muestra el total de aura y los últimos cinco cambios aprobados. Sin usuario, muestra tu perfil.
+- `/perfil usuario:@Fran` muestra aura, propuestas recibidas aprobadas/rechazadas, votos registrados y evolución acumulada de los últimos cinco cambios aprobados. Sin usuario, muestra tu perfil.
 - `/historial usuario:@Fran pagina:1` muestra todos los cambios aprobados, con puntos, motivos, fecha y quién los propuso. Hay ocho movimientos por página; sin usuario, muestra tu historial.
+- `/ranking` muestra las diez personas con más aura del servidor, sumando solo cambios aprobados. Los empates comparten puesto y no se generan notificaciones por mención.
 - `/info` explica los comandos y las reglas de votación dentro de Discord.
 
 ## Preparación
@@ -26,7 +27,7 @@ Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 1
 2. En **Workers y Pages → Crear aplicación**, elegí crear un **Worker** desde un repositorio de GitHub y seleccioná `Frangallardo30/Ben10`. Si pide un comando de despliegue, usá `npx wrangler deploy`; el directorio raíz es `/`.
 3. El binding `MESSAGE_SYNC` y la migración del Durable Object están declarados en `wrangler.toml` y se crean al desplegar con Wrangler. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
 4. En **Discord Developer Portal → Ben 10 → General Information**, guardá `https://ben10.<tu-subdominio>.workers.dev/interactions` como **Interactions Endpoint URL**. Usá la URL exacta que Cloudflare muestre para tu Worker.
-5. El Worker registra `/aura`, `/perfil`, `/historial` y `/info` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
+5. El Worker registra `/aura`, `/perfil`, `/historial`, `/ranking` y `/info` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
 
 El endpoint no necesita que mantengas una computadora encendida. Los secretos se guardan en Cloudflare y nunca en GitHub.
 

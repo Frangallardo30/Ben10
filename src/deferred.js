@@ -1,15 +1,16 @@
+import { discordRequest, discordJSON, OperationalError } from './diagnostics.js';
 const API = 'https://discord.com/api/v10';
 const OPERATION_TIMEOUT_MS = 20000;
 
 async function webhook(interaction, env, method, path, data) {
   const appId = interaction.application_id ?? env.DISCORD_APPLICATION_ID;
-  const response = await fetch(`${API}/webhooks/${appId}/${interaction.token}${path}`, {
+  const response = await discordRequest(`${API}/webhooks/${appId}/${interaction.token}${path}`, {
     method,
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ...data, allowed_mentions: { parse: [] } })
   });
-  if (!response.ok) throw new Error(`Interaction completion failed: ${response.status}`);
-  return response.json();
+  if (!response.ok) throw new OperationalError('DISCORD_WEBHOOK_FAILED', 'discord', response.status);
+  return discordJSON(response);
 }
 
 export function editDeferred(interaction, env, data) {
@@ -28,7 +29,7 @@ export async function withDeadline(operation) {
     return await Promise.race([
       operation,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Database operation timed out')), OPERATION_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new OperationalError('INTERACTION_TIMEOUT', 'worker')), OPERATION_TIMEOUT_MS);
       })
     ]);
   } finally { clearTimeout(timer); }

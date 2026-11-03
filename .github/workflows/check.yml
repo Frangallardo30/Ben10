@@ -15,4 +15,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: node scripts/check-deferred-runtime.mjs
+      - run: node scripts/check-message-sync-runtime.mjs
+      - run: node scripts/check-proposal-dates-runtime.mjs
       - run: npx wrangler deploy --dry-run

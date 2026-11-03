@@ -1,3 +1,4 @@
+import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, OperationalError, reportFailure } from './diagnostics.js';
 import { historyDateExpression } from './proposal-dates.js';
 import { prepareWrites } from './database.js';
 import { editDeferred, deferredButtonError, withDeadline } from './deferred.js';
@@ -17,23 +18,23 @@ export async function verified(request, publicKey) {
   const signature = request.headers.get('X-Signature-Ed25519');
   const timestamp = request.headers.get('X-Signature-Timestamp');
   if (!signature || !timestamp || !publicKey) {
-    console.warn('Discord verification: missing signature, timestamp, or public key');
+    diagnostic('warn', 'SIGNATURE_DATA_MISSING', 'validation');
     return null;
   }
-  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
-    console.warn('Discord verification: timestamp outside five minute window');
+  if (!Number.isFinite(Number(timestamp)) || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
+    diagnostic('warn', 'SIGNATURE_TIMESTAMP_INVALID', 'validation');
     return null;
   }
-  const body = await request.text();
   try {
+    const body = await request.text();
     const key = await crypto.subtle.importKey('raw', bytes(publicKey), 'Ed25519', false, ['verify']);
     if (!(await crypto.subtle.verify('Ed25519', key, bytes(signature), new TextEncoder().encode(timestamp + body)))) {
-      console.warn('Discord verification: invalid signature');
+      diagnostic('warn', 'SIGNATURE_INVALID', 'validation');
       return null;
     }
     return JSON.parse(body);
   } catch (error) {
-    console.warn('Discord verification: invalid key or request format', error?.name);
+    diagnostic('warn', 'SIGNATURE_OR_BODY_INVALID', 'validation');
     return null;
   }
 }
@@ -57,7 +58,7 @@ function profileIdentity(interaction, userId) {
 }
 
 async function discord(env, path, method, body) {
-  return fetch(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  return discordRequest(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 }
 
 async function expireProposals(env) {
@@ -75,29 +76,35 @@ async function expireProposals(env) {
 
 function synchronizeInBackground(env, ctx, id) {
   ctx.waitUntil(requestMessageSync(env, id).catch((error) => {
-    console.warn('Message synchronization pending', id, error?.name);
+    reportFailure('MESSAGE_SYNC_PENDING', error);
   }));
 }
 
 async function ensureCommandsRegistered(env) {
   if (!env.DISCORD_BOT_TOKEN) {
-    console.warn('Discord commands not registered: DISCORD_BOT_TOKEN is missing');
+    diagnostic('warn', 'COMMANDS_TOKEN_MISSING', 'config');
     return;
   }
   await prepareWrites(env.DB);
-  const version = 'aura-profile-history-info-v4';
+  const version = 'aura-profile-history-info-ranking-stats-v6';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
   if (saved?.value === version) {
     const current = await discord(env, path, 'GET');
-    if (!current.ok) throw new Error(`Discord command lookup failed: ${current.status}`);
-    const registered = await current.json();
-    if (commands.every((command) => registered.some((item) => (item.type ?? 1) === 1 && item.name === command.name && item.description === command.description))) return;
+    if (!current.ok) throw new OperationalError('DISCORD_COMMAND_LOOKUP_FAILED', 'discord', current.status);
+    const registered = await discordJSON(current);
+    if (!Array.isArray(registered) || registered.some((item) => !item || typeof item.name !== 'string')) {
+      throw new OperationalError('DISCORD_RESPONSE_INVALID', 'discord');
+    }
+    if (commands.every((command) => registered.some((item) => (item.type ?? 1) === 1 && item.name === command.name && item.description === command.description))) {
+      diagnostic('info', 'COMMANDS_CURRENT', 'discord');
+      return;
+    }
   }
   const response = await discord(env, path, 'PUT', commands);
-  if (!response.ok) throw new Error(`Discord command registration failed: ${response.status}`);
+  if (!response.ok) throw new OperationalError('DISCORD_COMMAND_REGISTER_FAILED', 'discord', response.status);
   await env.DB.prepare("INSERT INTO bot_settings(key, value) VALUES ('commands_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(version).run();
-  console.log('Discord commands registered');
+  diagnostic('info', 'COMMANDS_REGISTERED', 'discord');
 }
 
 let nextCommandCheckAt = 0;
@@ -107,7 +114,7 @@ function checkCommandsInBackground(env, ctx) {
   nextCommandCheckAt = Date.now() + 300000;
   ctx.waitUntil(ensureCommandsRegistered(env).catch((error) => {
     nextCommandCheckAt = 0;
-    console.error('Discord command sync failed', error);
+    reportFailure('COMMANDS_SYNC_FAILED', error);
   }));
 }
 
@@ -121,8 +128,9 @@ async function command(interaction, env, ctx) {
         color: 0xff9c53,
         fields: [
           { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo.', inline: false },
-          { name: '👤 /perfil', value: 'Muestra el aura total, las votaciones abiertas y los últimos cambios aprobados. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
+          { name: '👤 /perfil', value: 'Muestra aura, propuestas recibidas aprobadas/rechazadas, votos registrados y evolución por fecha de creación. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
+          { name: '🏆 /ranking', value: 'Muestra las 10 personas con más aura de este servidor. Solo cuentan los cambios aprobados; los empates comparten puesto.', inline: false },
           { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
         footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
@@ -130,6 +138,22 @@ async function command(interaction, env, ctx) {
     } });
   }
   if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+  if (interaction.data.name === 'ranking') {
+    const rows = await env.DB.prepare(`SELECT target_id, SUM(amount) AS aura,
+      RANK() OVER (ORDER BY SUM(amount) DESC) AS position
+      FROM proposals WHERE guild_id = ? AND status = 'approved'
+      GROUP BY target_id ORDER BY aura DESC, target_id ASC LIMIT 10`).bind(interaction.guild_id).all();
+    const lines = rows.results.map((row) => `**${row.position}.** <@${row.target_id}> · **${formatNumber(row.aura)}** puntos`);
+    return reply({ type: 4, data: {
+      allowed_mentions: { parse: [] },
+      embeds: [{
+        title: '🏆 Ranking de aura',
+        description: lines.length ? lines.join('\n') : 'Todavía no hay cambios de aura aprobados en este servidor.',
+        color: 0xff9c53,
+        footer: { text: 'Top 10 del servidor · Empates: mismo puesto y orden por ID de usuario.' }
+      }]
+    } });
+  }
   if (interaction.data.name === 'historial') {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const page = option(interaction, 'pagina') ?? 1;
@@ -161,6 +185,16 @@ async function command(interaction, env, ctx) {
     const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open'").bind(interaction.guild_id, user).first();
     const date = await historyDateExpression(env.DB);
     const history = await env.DB.prepare(`SELECT amount, reason, ${date} AS created_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
+    const stats = await env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'rejected') AS rejected,
+      (SELECT COUNT(*) FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.guild_id = ? AND v.user_id = ?) AS votes`)
+      .bind(interaction.guild_id, user, interaction.guild_id, user).first();
+    const evolution = await env.DB.prepare(`SELECT amount, created_at, balance FROM (
+      SELECT id, amount, ${date} AS created_at,
+        SUM(amount) OVER (ORDER BY ${date} ASC, id ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS balance
+      FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'
+    ) ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
+    const trajectory = evolution.results.reverse().map((item) => `<t:${item.created_at}:d> · ${label(item.amount)} → **${formatNumber(item.balance)}** puntos`);
     const identity = profileIdentity(interaction, user);
     const lines = history.results.map((item) => `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
     return reply({ type: 4, data: {
@@ -173,9 +207,12 @@ async function command(interaction, env, ctx) {
         fields: [
           { name: '✅ Cambios aprobados', value: formatNumber(score?.approved ?? 0), inline: true },
           { name: '🗳️ Votaciones abiertas', value: formatNumber(pending?.total ?? 0), inline: true },
-          { name: '📜 Últimos movimientos', value: lines.length ? lines.join('\n') : 'Todavía no hay cambios aprobados.', inline: false }
+          { name: '📜 Últimos movimientos', value: lines.length ? lines.join('\n') : 'Todavía no hay cambios aprobados.', inline: false },
+          { name: '❌ Propuestas recibidas rechazadas', value: formatNumber(stats.rejected), inline: true },
+          { name: '🗳️ Votos registrados', value: formatNumber(stats.votes), inline: true },
+          { name: '📈 Evolución del aura', value: trajectory.length ? trajectory.join('\n') : 'Todavía no hay cambios aprobados.', inline: false }
         ],
-        footer: { text: 'Ben 10 · El aura cambia cuando termina la votación' }
+        footer: { text: 'Evolución: últimos 5 cambios aprobados, por fecha de creación. Un voto registrado por propuesta.' }
       }]
     } });
   }
@@ -230,7 +267,7 @@ async function vote(interaction, env, ctx) {
     env.DB.prepare('INSERT OR IGNORE INTO vote_interactions(interaction_id, proposal_id) VALUES (?, ?)').bind(interaction.id, id)
   ]);
   synchronizeInBackground(env, ctx, id);
-  ctx.waitUntil(sendClosureNotifications(env, id).catch((error) => console.warn('Closure notice failed', error?.name)));
+  ctx.waitUntil(sendClosureNotifications(env, id).catch((error) => reportFailure('CLOSURE_NOTICE_FAILED', error)));
   return reply({ type: 6 });
 }
 
@@ -274,7 +311,7 @@ async function performInteraction(interaction, env, ctx) {
     // Only the per-proposal synchronizer publishes interactive buttons. Replaying
     // a creation cannot restore an old set of buttons after a later closure.
     const message = await editDeferred(interaction, env, { ...payload.data, components: [] });
-    if (!/^\d+$/.test(message.id ?? '')) throw new Error('Original message ID missing');
+    if (!/^\d+$/.test(message?.id ?? '')) throw new OperationalError('DISCORD_MESSAGE_ID_MISSING', 'discord');
     await env.DB.batch([
       env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(message.id, interaction.id),
       env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(interaction.id)
@@ -290,37 +327,31 @@ async function finishInteraction(interaction, env, ctx) {
   try {
     await withDeadline(performInteraction(interaction, env, ctx));
   } catch (error) {
-    console.warn('Deferred interaction failed', error?.name);
+    reportFailure('INTERACTION_FAILED', error);
     const message = isCommand && interaction.data.name !== 'aura'
       ? 'No pude consultar los datos. Intentá de nuevo en unos segundos.'
       : 'No pude confirmar la operación. Consultá /perfil antes de volver a intentarlo.';
     try {
       if (isCommand) await editDeferred(interaction, env, { content: message, embeds: [], components: [] });
       else await deferredButtonError(interaction, env, message);
-    } catch (deliveryError) { console.warn('Interaction error delivery failed', deliveryError?.name); }
+    } catch (deliveryError) { reportFailure('INTERACTION_ERROR_DELIVERY_FAILED', deliveryError); }
   }
 }
 
 function deferInteraction(interaction, env, ctx) {
-  if (!interaction.id || !interaction.token) return ephemeral('La interacción no tiene los datos necesarios. Intentá de nuevo.');
+  if (!interaction.id || !interaction.token) {
+    diagnostic('warn', 'INTERACTION_DATA_MISSING', 'validation');
+    return ephemeral('La interacción no tiene los datos necesarios. Intentá de nuevo.');
+  }
   ctx.waitUntil(Promise.resolve().then(() => finishInteraction(interaction, env, ctx)));
   return reply({ type: interaction.type === 2 ? 5 : 6 });
 }
 
 export default {
   async fetch(request, env, ctx) {
+    env = { ...env, DB: diagnosticDatabase(env.DB) };
     if (request.method === 'GET' && new URL(request.url).pathname === '/health') {
-      const publicKey = env.DISCORD_PUBLIC_KEY ?? '';
-      return reply({
-        status: 'ok',
-        public_key_present: publicKey.length > 0,
-        public_key_length: publicKey.length,
-        public_key_trimmed_length: publicKey.trim().length,
-        public_key_ready: /^[0-9a-fA-F]{64}$/.test(publicKey),
-        bot_token_present: Boolean(env.DISCORD_BOT_TOKEN),
-        application_id_ready: env.DISCORD_APPLICATION_ID === '1417570023370653836',
-        database_ready: Boolean(env.DB)
-      });
+      return reply({ status: 'ok' });
     }
     if (request.method !== 'POST' || new URL(request.url).pathname !== '/interactions') return new Response('Not found', { status: 404 });
     const interaction = await verified(request, env.DISCORD_PUBLIC_KEY);
@@ -331,7 +362,7 @@ export default {
         return reply({ type: 1 });
       }
       if (interaction.type === 2) {
-        if (!['aura', 'perfil', 'historial', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
+        if (!['aura', 'perfil', 'historial', 'ranking', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
         checkCommandsInBackground(env, ctx);
         if (interaction.data.name === 'info') return command(interaction, env, ctx);
         if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
@@ -350,17 +381,18 @@ export default {
       }
       return ephemeral('Interacción desconocida.');
     } catch (error) {
-      console.error('Interaction failed', error);
+      reportFailure('INTERACTION_FAILED', error);
       return ephemeral('Ocurrió un error. Intentá de nuevo.');
     }
   },
   async scheduled(_event, env) {
-    await prepareWrites(env.DB);
-    try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
-    try { await expireProposals(env); } catch (error) { console.error('Aura expiry failed', error); }
-    try { await retryMessageSync(env); } catch (error) { console.warn('Message sync retry failed', error?.name); }
+    env = { ...env, DB: diagnosticDatabase(env.DB) };
+    try { await prepareWrites(env.DB); } catch (error) { reportFailure('DATABASE_PREPARATION_FAILED', error); return; }
+    try { await ensureCommandsRegistered(env); } catch (error) { reportFailure('COMMANDS_SYNC_FAILED', error); }
+    try { await expireProposals(env); } catch (error) { reportFailure('EXPIRY_FAILED', error); }
+    try { await retryMessageSync(env); } catch (error) { reportFailure('MESSAGE_SYNC_RETRY_FAILED', error); }
     try {
       await sendClosureNotifications(env);
-    } catch (error) { console.warn('Closure notice retry failed', error?.name); }
+    } catch (error) { reportFailure('CLOSURE_NOTICE_RETRY_FAILED', error); }
   }
 };

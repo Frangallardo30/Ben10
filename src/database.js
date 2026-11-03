@@ -1,3 +1,4 @@
+import { diagnosticDatabase } from './diagnostics.js';
 import { migrateProposalDates } from './proposal-dates.js';
 import { MESSAGE_SYNC_SCHEMA_SQL } from './message-sync.js';
 import { NOTIFICATION_SCHEMA_SQL } from './notifications.js';
@@ -11,6 +12,7 @@ export const VOTE_INTERACTIONS_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS vote_int
 // is evicted so a later interaction can retry; read-only commands do not need it.
 const preparations = new WeakMap();
 export function prepareWrites(db) {
+  db = diagnosticDatabase(db);
   if (preparations.has(db)) return preparations.get(db);
   const ready = prepare(db).catch((error) => {
     preparations.delete(db);

@@ -166,7 +166,7 @@ test('perfil e historial no preparan tablas; las escrituras preparan una sola ve
     if (statements.some((statement) => statement.sql.startsWith('CREATE TABLE'))) preparations++;
     return batch(statements);
   };
-  for (const name of ['perfil', 'historial']) {
+  for (const name of ['perfil', 'historial', 'ranking']) {
     const attempt = await start(env, { type: 2, data: { name } });
     await attempt.flush();
   }
@@ -211,4 +211,26 @@ test('un fallo preparando tablas no queda cacheado y puede recuperarse', async (
   const replay = await start(env, attempt.interaction);
   await replay.flush();
   assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 1);
+});
+
+
+test('ranking reconoce antes de D1 lento y completa la respuesta sin migrar tablas', async (t) => {
+  const { env, DB, delivered } = setup(t);
+  const gate = barrier();
+  const prepare = DB.prepare.bind(DB);
+  DB.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (sql.includes('RANK() OVER')) {
+      const all = statement.all.bind(statement);
+      statement.all = async () => { await gate.promise; return all(); };
+    }
+    return statement;
+  };
+  const attempt = await start(env, { type: 2, data: { name: 'ranking' } });
+  assert.deepEqual(attempt.initial, { type: 5 });
+  assert.equal(delivered.length, 0);
+  gate.release();
+  await attempt.flush();
+  assert.equal(delivered[0].method, 'PATCH');
+  assert.match(delivered[0].body.embeds[0].title, /Ranking de aura/);
 });

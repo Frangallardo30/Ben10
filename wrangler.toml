@@ -21,3 +21,7 @@ class_name = "ProposalMessageSync"
 [[migrations]]
 tag = "v1-message-sync"
 new_sqlite_classes = ["ProposalMessageSync"]
+
+[observability.logs]
+enabled = true
+invocation_logs = false

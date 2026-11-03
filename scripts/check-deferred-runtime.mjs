@@ -51,9 +51,18 @@ async function dispatch(interaction) {
 
 const messageEdits = () => events.filter((event) => event.method === 'PATCH' && event.url.includes('/channels/'));
 try {
+  const health = await runtime.dispatchFetch('https://worker.test/health');
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { status: 'ok' });
   const db = await runtime.getD1Database('DB');
   const schema = await readFile(new URL('../schema.sql', import.meta.url), 'utf8');
   for (const sql of schema.split(';').map((sql) => sql.trim()).filter(Boolean)) await db.prepare(sql).run();
+  assert.deepEqual(await dispatch({ id: '100000', type: 1 }), { type: 1 });
+  const invalid = await runtime.dispatchFetch('https://worker.test/interactions', {
+    method: 'POST', headers: { 'X-Signature-Ed25519': '00'.repeat(64),
+      'X-Signature-Timestamp': String(Math.floor(Date.now() / 1000)) }, body: JSON.stringify({ type: 1 })
+  });
+  assert.equal(invalid.status, 401);
   const aura = { id: '100001', token: 'runtime-aura', type: 2, member: { user: { id: 'proposer' } }, data: { name: 'aura', options: [
     { name: 'usuario', value: 'target' }, { name: 'puntos', value: 100 }, { name: 'motivo', value: 'Runtime deferred' }
   ] } };
@@ -85,8 +94,38 @@ try {
   assert.match(messageEdits().at(-1).body.embeds[0].fields[2].value, /Cancelada/);
   assert.deepEqual(messageEdits().at(-1).body.components, []);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').first()).n, 0);
+  const approval = { ...aura, id: '100010', token: 'runtime-approval' };
+  assert.deepEqual(await dispatch(approval), { type: 5 });
+  await until(() => messageEdits().some((event) => event.body.components[0]?.components[0]?.custom_id === 'aura:yes:100010'));
+  for (let i = 0; i < 4; i++) {
+    const previous = messageEdits().length;
+    assert.deepEqual(await dispatch({ id: String(100011 + i), token: `runtime-role-${i}`, type: 3,
+      member: { user: { id: `role-${i}` }, roles: ['1431791263547392121'] },
+      data: { custom_id: 'aura:yes:100010' }, message: { id: '999123' } }), { type: 6 });
+    await until(() => messageEdits().length > previous);
+  }
+  assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100010').first()).status, 'approved');
+  assert.deepEqual(messageEdits().at(-1).body.components, []);
+  assert.equal(messageEdits().at(-1).body.embeds[0].fields[0].value, '👍 4 · 👎 0');
+  assert.equal(messageEdits().at(-1).body.embeds[0].fields[1].value, '👍 4 · 👎 0');
+  assert.deepEqual(await dispatch({ id: '100020', token: 'runtime-profile', type: 2,
+    member: { user: { id: 'target' } }, data: { name: 'perfil' } }), { type: 5 });
+  await until(() => events.some((event) => event.url.includes('runtime-profile') && event.body?.embeds?.[0]?.description.includes('100 puntos')));
+  const profile = events.find((event) => event.url.includes('runtime-profile')).body;
+  assert.equal(profile.embeds[0].fields.find((field) => field.name.includes('rechazadas')).value, '0');
+  assert.equal(profile.embeds[0].fields.find((field) => field.name.includes('registrados')).value, '0');
+  assert.match(profile.embeds[0].fields.find((field) => field.name.includes('Evolución')).value, /\+100 → \*\*100\*\* puntos/);
+  assert.deepEqual(await dispatch({ id: '100021', token: 'runtime-ranking', type: 2,
+    member: { user: { id: 'target' } }, data: { name: 'ranking' } }), { type: 5 });
+  await until(() => events.some((event) => event.url.includes('runtime-ranking') && event.body?.embeds?.[0]?.title.includes('Ranking')));
+  const ranking = events.find((event) => event.url.includes('runtime-ranking')).body;
+  assert.equal(ranking.embeds[0].description, '**1.** <@target> · **100** puntos');
+  assert.deepEqual(ranking.allowed_mentions, { parse: [] });
+  const info = await dispatch({ id: '100022', token: 'runtime-info', type: 2, data: { name: 'info' } });
+  assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/ranking')));
+  assert.ok(events.some((event) => event.url.includes('/applications/') && event.method === 'PUT' && event.body.some((command) => command.name === 'ranking')));
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));
-  console.log('PASS: workerd defers commands/buttons, completes webhooks, deduplicates proposals/votes, cancels only an open proposal and reports D1 failure. Discord mocked; no remote requests.');
+  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking on D1 and Durable Objects, and handles retries, cancellation and D1 failure. Discord mocked; no remote requests.');
 } finally { await runtime.dispose(); }

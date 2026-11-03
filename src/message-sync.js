@@ -1,3 +1,4 @@
+import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, OperationalError, reportFailure } from './diagnostics.js';
 import { display } from './presentation.js';
 
 export const MESSAGE_SYNC_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS proposal_message_sync (
@@ -22,12 +23,12 @@ export async function readProposalMessage(db, id) {
 }
 
 export async function requestMessageSync(env, id) {
-  if (!env.MESSAGE_SYNC) throw new Error('MESSAGE_SYNC binding is missing');
+  if (!env.MESSAGE_SYNC) throw new OperationalError('MESSAGE_SYNC_BINDING_MISSING', 'config');
   const stub = env.MESSAGE_SYNC.get(env.MESSAGE_SYNC.idFromName(id));
   const response = await stub.fetch('https://message-sync.internal/', {
     method: 'POST', body: JSON.stringify({ id })
   });
-  if (!response.ok) throw new Error(`Message synchronization deferred: ${response.status}`);
+  if (!response.ok) throw new OperationalError('MESSAGE_SYNC_DEFERRED', 'worker', response.status);
 }
 
 export async function retryMessageSync(env) {
@@ -38,7 +39,7 @@ export async function retryMessageSync(env) {
     ORDER BY s.retry_at, s.proposal_id LIMIT 20`).all();
   for (const row of pending.results) {
     try { await requestMessageSync(env, row.proposal_id); }
-    catch (error) { console.warn('Message synchronization pending', row.proposal_id, error?.name); }
+    catch (error) { reportFailure('MESSAGE_SYNC_PENDING', error); }
   }
 }
 
@@ -48,6 +49,7 @@ export async function retryMessageSync(env) {
 export class ProposalMessageSync {
   constructor(_ctx, env) {
     this.env = env;
+    this.db = diagnosticDatabase(env.DB);
     this.tail = Promise.resolve();
   }
 
@@ -58,43 +60,48 @@ export class ProposalMessageSync {
   }
 
   async defer(id) {
-    await this.env.DB.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + 60 WHERE proposal_id = ?').bind(id).run();
+    await this.db.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + 60 WHERE proposal_id = ?').bind(id).run();
   }
 
   async synchronize(request) {
     const { id } = await request.json();
     if (typeof id !== 'string' || !id) return new Response('Invalid proposal', { status: 400 });
-    if (!this.env.DISCORD_BOT_TOKEN) return new Response('Bot token missing', { status: 503 });
+    if (!this.env.DISCORD_BOT_TOKEN) {
+      diagnostic('warn', 'MESSAGE_SYNC_TOKEN_MISSING', 'config');
+      return new Response('Bot token missing', { status: 503 });
+    }
     // Bound each request; any remaining revision stays pending for the next call/cron.
     for (let attempt = 0; attempt < 5; attempt++) {
-      const snapshot = await readProposalMessage(this.env.DB, id);
+      const snapshot = await readProposalMessage(this.db, id);
       if (!snapshot) return new Response('Proposal missing', { status: 404 });
       const { proposal, body } = snapshot;
       if (proposal.revision == null || proposal.revision <= proposal.synced_revision) return new Response('Current');
       if (!proposal.message_id || proposal.retry_at > Math.floor(Date.now() / 1000)) return new Response('Pending', { status: 503 });
       try {
-        const response = await fetch(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages/${proposal.message_id}`, {
+        const response = await discordRequest(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages/${proposal.message_id}`, {
           method: 'PATCH',
           headers: { Authorization: `Bot ${this.env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
           body: JSON.stringify(body)
         });
         if (response.status === 429) {
-          const rateLimit = await response.json();
+          diagnostic('warn', 'DISCORD_MESSAGE_RATE_LIMITED', 'discord', 429);
+          const rateLimit = await discordJSON(response);
           const seconds = Number(rateLimit.retry_after);
           const delay = Number.isFinite(seconds) ? Math.max(1, Math.ceil(seconds)) : 60;
-          await this.env.DB.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + ? WHERE proposal_id = ?').bind(delay, id).run();
+          await this.db.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + ? WHERE proposal_id = ?').bind(delay, id).run();
           return new Response('Rate limited', { status: 503 });
         }
         if (!response.ok && response.status !== 404) {
+          diagnostic('warn', 'DISCORD_MESSAGE_EDIT_FAILED', 'discord', response.status);
           await this.defer(id);
           return new Response('Discord error', { status: 503 });
         }
         // A vote may have arrived while PATCH was in flight. Acknowledge only the
         // version actually rendered, then read again before the next edit.
-        await this.env.DB.prepare(`UPDATE proposal_message_sync
+        await this.db.prepare(`UPDATE proposal_message_sync
           SET synced_revision = ?, retry_at = 0 WHERE proposal_id = ?`).bind(proposal.revision, id).run();
       } catch (error) {
-        console.warn('Message edit failed', id, error?.name);
+        reportFailure('MESSAGE_EDIT_FAILED', error);
         await this.defer(id);
         return new Response('Delivery uncertain', { status: 503 });
       }

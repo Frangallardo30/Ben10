@@ -4,12 +4,13 @@ export const commands = [
     { type: 4, name: 'puntos', description: 'Puntos entre -1000 y 1000', required: true, min_value: -1000, max_value: 1000 },
     { type: 3, name: 'motivo', description: 'Por qué merece ese cambio', required: true, max_length: 250 }
   ] },
-  { name: 'perfil', description: 'Muestra el aura y los últimos movimientos aprobados', options: [
+  { name: 'perfil', description: 'Muestra aura, estadísticas personales y evolución', options: [
     { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false }
   ] },
   { name: 'historial', description: 'Muestra los motivos de los cambios de aura aprobados', options: [
     { type: 6, name: 'usuario', description: 'Miembro a consultar', required: false },
     { type: 4, name: 'pagina', description: 'Página del historial (8 movimientos por página)', required: false, min_value: 1 }
   ] },
+  { name: 'ranking', description: 'Muestra las 10 personas con más aura del servidor' },
   { name: 'info', description: 'Explica los comandos y las reglas de votación de Ben 10' }
 ];

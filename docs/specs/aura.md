@@ -20,7 +20,7 @@ La preparación solicita una sola vez actualizar los mensajes abiertos anteriore
 
 ## Respuestas a interacciones
 
-Después de verificar la firma, `/aura`, `/perfil` y `/historial` reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` responde directamente porque no consulta la base. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.
+Después de verificar la firma, `/aura`, `/perfil`, `/historial` y `/ranking` reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` responde directamente porque no consulta la base. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.
 
 La preparación de tablas y la migración de votos se comparten una vez por binding de D1 en cada instancia del Worker, antes de las escrituras. Un fallo permite reintentar la preparación. Las consultas de perfil e historial no esperan esta migración.
 
@@ -42,8 +42,9 @@ D1 guarda un único aviso por propuesta dentro del lote de cierre. El envío se 
 
 ## Consultar
 
-- `/perfil [usuario]` muestra aura total, cantidad de cambios aprobados, propuestas abiertas y los cinco cambios aprobados más recientes. Sin `usuario`, muestra el perfil de quien ejecuta el comando.
+- `/perfil [usuario]` muestra aura total, cantidad de cambios recibidos aprobados y rechazados, propuestas abiertas, votos registrados y los cinco cambios aprobados más recientes. La evolución muestra los últimos cinco cambios aprobados en orden de creación ascendente (desempate por ID), con saldo acumulado desde la primera aprobación, no solo desde los cinco visibles. No representa la hora de aprobación porque ese dato no se guarda. Los votos registrados cuentan una vez por propuesta con un voto conservado de esa persona, incluso en propuestas cerradas; cambiar el voto no suma otro. Todos los datos se limitan al servidor consultado. Sin `usuario`, muestra el perfil de quien ejecuta el comando.
 - `/historial [usuario] [pagina]` lista cambios aprobados con puntos, motivo, fecha y proponente, ocho por página. Sin `usuario`, muestra el historial propio; la primera página es la predeterminada.
+- `/ranking` muestra hasta diez usuarios con propuestas aprobadas en el servidor actual, ordenados por la suma de aura descendente. Incluye totales cero y negativos. Los empates comparten puesto (1, 1, 3) y se ordenan por ID de usuario ascendente; el límite sigue siendo diez entradas aunque corte un empate. Se muestran menciones sin generar notificaciones. Si no hay aprobaciones, indica que no hay datos.
 - `/info` explica dentro de Discord los comandos y las reglas de votación.
 
 El aura total suma solo propuestas aprobadas. Las consultas se separan por servidor. D1 guarda IDs de servidor y usuarios, puntos, motivos y votos. `created_at` guarda la fecha de creación en segundos Unix y ordena el historial y los últimos movimientos del perfil, con el ID descendente como desempate. `expires_at` se reserva para el vencimiento. Las propuestas nuevas guardan ambas fechas al crearse; repetir su interacción no las modifica.
@@ -51,3 +52,7 @@ El aura total suma solo propuestas aprobadas. Las consultas se separan por servi
 La migración añade `created_at` si falta y completa solo valores nulos con `expires_at - 86400`, conservando la fecha que ya se mostraba para datos antiguos. Puede repetirse y admite la carrera entre instancias que intentan añadir la columna. Las lecturas no ejecutan esa migración: antes de que exista la columna usan el cálculo heredado y después usan `COALESCE(created_at, expires_at - 86400)` para soportar filas de versiones anteriores. El índice de historial se crea durante la migración, después de añadir la columna; aplicar de nuevo `schema.sql` sobre una base antigua sigue siendo seguro.
 
 Los límites y comprobaciones conocidos están en [`QUALITY.md`](../../QUALITY.md). Las mejoras pendientes se registran en [`docs/tasks/`](../tasks/README.md).
+
+## Diagnóstico operativo
+
+`/health` devuelve únicamente `{"status":"ok"}`; confirma la respuesta HTTP del Worker sin publicar configuración ni consultar D1. Los logs de aplicación usan eventos JSON con área (`d1`, `discord`, `validation`, `config` o `worker`), códigos fijos y estado HTTP cuando corresponde. No incluyen errores crudos, URLs, tokens, motivos ni IDs. El registro de comandos distingue alta correcta, lista ya actualizada, falta de token y errores. La [guía de operación](../operations/cloudflare.md) explica los códigos y cómo recuperar el servicio. Las invocaciones automáticas no se registran en la configuración de observabilidad; sí los eventos de aplicación.

@@ -9,6 +9,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - Votos de miembros con y sin el rol; un voto por persona y cambio de voto.
 - Cierre con cuatro votos del rol cuando esa opción empata o lidera, y con seis cuando va perdiendo, en ambos sentidos.
 - Bloqueo de nuevos votos después del cierre y separación por servidor.
+- Fechas de creación explícitas y heredadas, orden de historial/perfil, copia local de datos, migración repetida y concurrente sin pérdidas.
 - Cancelación limitada al creador y al servidor, repetición, vencimiento, carreras con el voto decisivo y actualización de mensajes anteriores.
 - Reconocimiento de comandos y botones sin esperar a D1 lento, errores y timeout, preparación recuperable y reentregas de interacciones sin duplicar propuestas ni revertir votos posteriores.
 - Ediciones serializadas por propuesta, revisión nueva durante un PATCH demorado, recuperación tras errores y reinicio, límites 429 y votos concurrentes de una misma persona.
@@ -19,6 +20,8 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 `node scripts/check-message-sync-runtime.mjs` ejecuta una prueba adicional con workerd, D1 y el Durable Object locales usando las dependencias fijadas de Wrangler. Retiene una edición abierta mientras llega el cierre y verifica que solo haya una edición en vuelo y que la última retire los botones. Discord está simulado y no se hacen solicitudes remotas.
 
 `node scripts/check-deferred-runtime.mjs` comprueba con workerd, D1 y webhooks simulados el reconocimiento diferido, la publicación del resultado, la reentrega de propuestas y votos, la cancelación de una propuesta abierta y una respuesta de error ante un fallo real de SQL en D1 local.
+
+`node scripts/check-proposal-dates-runtime.mjs` ejecuta dos instancias de Worker sobre una base D1 local heredada, comprueba la migración concurrente y repetida y conserva el orden y las fechas aunque se modifique el vencimiento. Usa datos representativos locales; no accede a producción.
 
 ## Prueba manual en Discord
 

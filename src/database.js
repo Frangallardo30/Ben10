@@ -1,3 +1,4 @@
+import { migrateProposalDates } from './proposal-dates.js';
 import { MESSAGE_SYNC_SCHEMA_SQL } from './message-sync.js';
 import { NOTIFICATION_SCHEMA_SQL } from './notifications.js';
 
@@ -20,6 +21,7 @@ export function prepareWrites(db) {
 }
 
 async function prepare(db) {
+  await migrateProposalDates(db);
   await db.batch([
     db.prepare('CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)'),
     db.prepare("CREATE TABLE IF NOT EXISTS role_votes (proposal_id TEXT NOT NULL, user_id TEXT NOT NULL, choice TEXT NOT NULL CHECK(choice IN ('yes', 'no')), PRIMARY KEY(proposal_id, user_id))"),

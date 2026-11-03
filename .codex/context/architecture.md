@@ -2,6 +2,7 @@
 
 - `src/index.js`: rutas del Worker, firma de Discord, comandos, botones y registro programado de comandos.
 - `src/deferred.js`: finalización por webhook de comandos y avisos efímeros de botones, con plazo para informar errores.
+- `src/proposal-dates.js`: migración idempotente de created_at y lectura compatible de fechas heredadas.
 - `src/database.js`: preparación compartida por binding de D1, migración e IDs de interacciones de voto procesadas.
 - `src/message-sync.js`: cola de revisiones en D1 y Durable Object por propuesta para serializar ediciones del mensaje; incluye reintentos por cron.
 - `src/presentation.js`: contenido del embed a partir de una instantánea consistente del estado y los recuentos.

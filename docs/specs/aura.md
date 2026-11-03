@@ -46,6 +46,8 @@ D1 guarda un único aviso por propuesta dentro del lote de cierre. El envío se 
 - `/historial [usuario] [pagina]` lista cambios aprobados con puntos, motivo, fecha y proponente, ocho por página. Sin `usuario`, muestra el historial propio; la primera página es la predeterminada.
 - `/info` explica dentro de Discord los comandos y las reglas de votación.
 
-El aura total suma solo propuestas aprobadas. Las consultas se separan por servidor. D1 guarda IDs de servidor y usuarios, puntos, motivos y votos. `expires_at` marca el vencimiento y sirve para calcular la fecha mostrada en historial.
+El aura total suma solo propuestas aprobadas. Las consultas se separan por servidor. D1 guarda IDs de servidor y usuarios, puntos, motivos y votos. `created_at` guarda la fecha de creación en segundos Unix y ordena el historial y los últimos movimientos del perfil, con el ID descendente como desempate. `expires_at` se reserva para el vencimiento. Las propuestas nuevas guardan ambas fechas al crearse; repetir su interacción no las modifica.
+
+La migración añade `created_at` si falta y completa solo valores nulos con `expires_at - 86400`, conservando la fecha que ya se mostraba para datos antiguos. Puede repetirse y admite la carrera entre instancias que intentan añadir la columna. Las lecturas no ejecutan esa migración: antes de que exista la columna usan el cálculo heredado y después usan `COALESCE(created_at, expires_at - 86400)` para soportar filas de versiones anteriores. El índice de historial se crea durante la migración, después de añadir la columna; aplicar de nuevo `schema.sql` sobre una base antigua sigue siendo seguro.
 
 Los límites y comprobaciones conocidos están en [`QUALITY.md`](../../QUALITY.md). Las mejoras pendientes se registran en [`docs/tasks/`](../tasks/README.md).

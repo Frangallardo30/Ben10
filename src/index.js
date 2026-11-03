@@ -1,3 +1,4 @@
+import { historyDateExpression } from './proposal-dates.js';
 import { prepareWrites } from './database.js';
 import { editDeferred, deferredButtonError, withDeadline } from './deferred.js';
 import { QUEUE_MESSAGE_SYNC_SQL, requestMessageSync, retryMessageSync, readProposalMessage } from './message-sync.js';
@@ -136,11 +137,12 @@ async function command(interaction, env, ctx) {
     const total = count?.total ?? 0;
     const pages = Math.max(1, Math.ceil(total / 8));
     if (page > pages) return ephemeral(`Ese perfil tiene ${pages} página${pages === 1 ? '' : 's'} de historial.`);
-    const history = await env.DB.prepare("SELECT amount, reason, proposer_id, expires_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY expires_at DESC, id DESC LIMIT 8 OFFSET ?").bind(interaction.guild_id, user, (page - 1) * 8).all();
+    const date = await historyDateExpression(env.DB);
+    const history = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`).bind(interaction.guild_id, user, (page - 1) * 8).all();
     const identity = profileIdentity(interaction, user);
     const entries = history.results.map((item) => {
       const reason = item.reason.replace(/\s+/g, ' ').trim();
-      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.expires_at - 86400}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
     });
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
@@ -157,7 +159,8 @@ async function command(interaction, env, ctx) {
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
     const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open'").bind(interaction.guild_id, user).first();
-    const history = await env.DB.prepare("SELECT amount, reason FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY expires_at DESC LIMIT 5").bind(interaction.guild_id, user).all();
+    const date = await historyDateExpression(env.DB);
+    const history = await env.DB.prepare(`SELECT amount, reason, ${date} AS created_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
     const identity = profileIdentity(interaction, user);
     const lines = history.results.map((item) => `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
     return reply({ type: 4, data: {
@@ -182,8 +185,9 @@ async function command(interaction, env, ctx) {
   const reason = String(option(interaction, 'motivo') ?? '').trim();
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
   await prepareWrites(env.DB);
-  const proposal = { id: interaction.id, guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, expires_at: Math.floor(Date.now() / 1000) + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
-  await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.expires_at).run();
+  const createdAt = Math.floor(Date.now() / 1000);
+  const proposal = { id: interaction.id, guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, created_at: createdAt, expires_at: createdAt + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
+  await env.DB.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id, proposal.proposer_id, amount, reason, proposal.created_at, proposal.expires_at).run();
   return reply({ type: 4, data: (await readProposalMessage(env.DB, proposal.id)).body });
 }
 

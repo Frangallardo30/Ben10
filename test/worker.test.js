@@ -522,3 +522,42 @@ test('la migración solicita actualizar una sola vez los mensajes abiertos anter
     assert.ok(DB.db.prepare("SELECT value FROM bot_settings WHERE key = 'cancel_button_v1'").get());
   } finally { DB.close(); }
 });
+
+test('las propuestas nuevas guardan created_at real y el replay conserva esa fecha', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  try {
+    const input = { ...base('creator'), id: 'date-new', type: 2, data: { name: 'aura', options: [
+      { name: 'usuario', value: 'target' }, { name: 'puntos', value: 100 }, { name: 'motivo', value: 'Fecha real' }
+    ] } };
+    await interaction(env, input);
+    const before = DB.db.prepare('SELECT created_at, expires_at FROM proposals WHERE id = ?').get(input.id);
+    assert.equal(before.created_at, Math.floor(now / 1000));
+    assert.equal(before.expires_at, before.created_at + 86400);
+    t.mock.method(Date, 'now', () => now + 60000);
+    await interaction(env, input);
+    assert.deepEqual(DB.db.prepare('SELECT created_at, expires_at FROM proposals WHERE id = ?').get(input.id), before);
+  } finally { DB.close(); }
+});
+
+for (const legacy of [false, true]) {
+  test(`historial y perfil ordenan por creación y muestran fechas ${legacy ? 'heredadas sin migración' : 'explícitas'}`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      if (legacy) DB.db.exec('DROP INDEX IF EXISTS proposals_history; ALTER TABLE proposals DROP COLUMN created_at');
+      for (const [id, createdAt, expiresAt] of [['older', 100, legacy ? 86500 : 999999], ['newer', 200, 86600]]) {
+        DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(id, 'guild-1', 'channel-1', 'target', 'creator', 100, id, expiresAt, 'approved');
+        if (!legacy) DB.db.prepare('UPDATE proposals SET created_at = ? WHERE id = ?').run(createdAt, id);
+      }
+      const history = await interaction(env, { ...base('target'), type: 2, data: { name: 'historial' } });
+      assert.match(history.data.embeds[0].description, /<t:200:d>[\s\S]*newer[\s\S]*<t:100:d>[\s\S]*older/);
+      const profile = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+      assert.match(profile.data.embeds[0].fields[2].value, /newer[\s\S]*older/);
+      if (legacy) assert.equal(DB.db.prepare('PRAGMA table_info(proposals)').all().some((column) => column.name === 'created_at'), false);
+    } finally { DB.close(); }
+  });
+}

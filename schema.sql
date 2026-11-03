@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   proposer_id TEXT NOT NULL,
   amount INTEGER NOT NULL,
   reason TEXT NOT NULL,
+  created_at INTEGER,
   expires_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open'
 );

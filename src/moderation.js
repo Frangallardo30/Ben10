@@ -1,3 +1,6 @@
+import { isAdministrator } from './admin-permissions.js';
+export { isAdministrator } from './admin-permissions.js';
+import { previewOperation, confirmOperation, operationView } from './admin-operations.js';
 import { display } from './presentation.js';
 import { historyDateExpression } from './proposal-dates.js';
 import { QUEUE_MESSAGE_SYNC_SQL, readProposalMessage, requestMessageSync } from './message-sync.js';
@@ -10,15 +13,9 @@ export const ADMIN_ACTIONS_SCHEMA_SQL = `CREATE TABLE IF NOT EXISTS admin_action
 )`;
 export const ADMIN_ACTIONS_INDEX_SQL = 'CREATE INDEX IF NOT EXISTS admin_actions_scope ON admin_actions(guild_id, created_at DESC, interaction_id DESC)';
 const stateSQL = "CASE WHEN status = 'open' AND expires_at <= unixepoch() THEN 'expired' ELSE status END";
-const states = { open: 'Abierta', approved: 'Aprobada', rejected: 'Rechazada', expired: 'Vencida', cancelled: 'Cancelada' };
+const states = { open: 'Abierta', approved: 'Aprobada', rejected: 'Rechazada', expired: 'Vencida', cancelled: 'Cancelada', voided: 'Anulada' };
 const opt = (interaction, name) => interaction.data.options?.[0]?.options?.find((option) => option.name === name)?.value;
 
-export function isAdministrator(interaction) {
-  try {
-    const permissions = BigInt(interaction.member?.permissions ?? '0');
-    return Boolean(interaction.guild_id && interaction.member?.user?.id && permissions >= 0n && permissions & 8n);
-  } catch { return false; }
-}
 
 function embed(title, description, footer) {
   return { allowed_mentions: { parse: [] }, embeds: [{ title, description, color: 0x747f8d, ...(footer ? { footer: { text: footer } } : {}) }] };
@@ -43,20 +40,34 @@ async function list(interaction, db) {
 async function actions(interaction, db) {
   const id = opt(interaction, 'propuesta') ?? null;
   const page = opt(interaction, 'pagina') ?? 1;
-  const count = await db.prepare('SELECT COUNT(*) AS n FROM admin_actions WHERE guild_id = ? AND (? IS NULL OR proposal_id = ?)')
-    .bind(interaction.guild_id, id, id).first();
+  const union = `SELECT interaction_id AS id, proposal_id, actor_id, action, reason, created_at, previous_status, result_status,
+      NULL AS operation_id, 0 AS effect, 1 AS item_count FROM admin_actions
+      WHERE guild_id = ? AND (? IS NULL OR proposal_id = ?)
+    UNION ALL
+    SELECT o.id, NULL, o.actor_id, o.kind, o.reason, o.processed_at, '', '', o.id,
+      (SELECT SUM(effect) FROM admin_operation_items WHERE operation_id = o.id),
+      (SELECT COUNT(*) FROM admin_operation_items WHERE operation_id = o.id)
+    FROM admin_operations o WHERE o.guild_id = ? AND o.status = 'applied'
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM admin_operation_items WHERE operation_id = o.id AND proposal_id = ?))`;
+  const args = [interaction.guild_id, id, id, interaction.guild_id, id, id];
+  const count = await db.prepare(`SELECT COUNT(*) AS n FROM (${union})`).bind(...args).first();
   const pages = Math.max(1, Math.ceil(count.n / 8));
   if (page > pages) return { content: `La auditoría tiene ${pages} página(s).` };
-  const rows = await db.prepare(`SELECT * FROM admin_actions WHERE guild_id = ? AND (? IS NULL OR proposal_id = ?)
-    ORDER BY created_at DESC, interaction_id DESC LIMIT 8 OFFSET ?`).bind(interaction.guild_id, id, id, (page - 1) * 8).all();
-  return embed('Moderación · Auditoría', rows.results.map((row) => `**${row.action === 'cancel' ? 'Cancelación' : 'Sincronización solicitada'}** · \`${row.proposal_id}\`\n<@${row.actor_id}> · <t:${row.created_at}:f> · ${row.previous_status} → ${row.result_status}\n${row.reason.replace(/\s+/g, ' ').slice(0, 250)}`).join('\n\n') || 'No hay acciones administrativas para estos filtros.', `Página ${page} de ${pages}`);
+  const rows = await db.prepare(`SELECT * FROM (${union}) ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`).bind(...args, (page - 1) * 8).all();
+  const lines = rows.results.map((row) => row.operation_id
+    ? `**${row.action === 'adjust' ? 'Ajuste administrativo' : 'Anulación de historial'}** · ${row.item_count} propuesta(s) · efecto ${row.effect > 0 ? '+' : ''}${row.effect} puntos\nOperación: \`${row.operation_id}\`\n<@${row.actor_id}> · <t:${row.created_at}:f>\n${row.reason.replace(/\s+/g, ' ').slice(0, 180)}`
+    : `**${row.action === 'cancel' ? 'Cancelación' : 'Sincronización solicitada'}** · \`${row.proposal_id}\`\n<@${row.actor_id}> · <t:${row.created_at}:f> · ${row.previous_status} → ${row.result_status}\n${row.reason.replace(/\s+/g, ' ').slice(0, 250)}`);
+  return embed('Moderación · Auditoría', lines.join('\n\n') || 'No hay acciones administrativas para estos filtros.', `Página ${page} de ${pages} · Usá /moderar operacion para ver una selección completa.`);
 }
 
 export async function moderate(interaction, env, ctx) {
   if (!isAdministrator(interaction)) return { content: 'Este panel es exclusivo de quienes tienen Administrador.' };
   const db = env.DB;
   const action = interaction.data.options?.[0]?.name;
-  if (!['listar', 'inspeccionar', 'cancelar', 'sincronizar', 'acciones'].includes(action)) return { content: 'Elegí una acción válida de /moderar.' };
+  if (!['listar', 'inspeccionar', 'cancelar', 'sincronizar', 'acciones', 'ajustar', 'anular', 'anular_varias', 'anular_ultima', 'confirmar', 'operacion'].includes(action)) return { content: 'Elegí una acción válida de /moderar.' };
+  if (['ajustar', 'anular', 'anular_varias', 'anular_ultima'].includes(action)) return previewOperation(interaction, env);
+  if (action === 'confirmar') return confirmOperation(interaction, env, ctx, opt(interaction, 'codigo'));
+  if (action === 'operacion') return operationView(interaction, db, opt(interaction, 'codigo'));
   const page = opt(interaction, 'pagina') ?? 1;
   if (!Number.isInteger(page) || page < 1 || page > 1000000) return { content: 'Elegí una página entera entre 1 y 1000000.' };
   const filter = opt(interaction, 'estado');
@@ -75,8 +86,9 @@ export async function moderate(interaction, env, ctx) {
     const expired = proposal.status === 'open' && proposal.expires_at <= Math.floor(Date.now() / 1000);
     const body = expired ? display({ ...proposal, status: 'expired' }, proposal) : snapshot.body;
     return { ...body, components: [], embeds: [{ ...body.embeds[0], fields: [
-      ...body.embeds[0].fields,
+      ...(body.embeds[0].fields ?? []),
       ...(expired ? [{ name: 'Estado guardado', value: 'Abierta; caducidad pendiente de procesar.' }] : []),
+      ...(proposal.status === 'voided' ? [{ name: 'Datos originales (privados)', value: `<@${proposal.target_id}> · ${proposal.amount} puntos\n${proposal.reason.slice(0, 250)}` }] : []),
       { name: 'ID', value: id }, { name: 'Proponente', value: `<@${proposal.proposer_id}>` },
       { name: 'Vencimiento', value: `<t:${proposal.expires_at}:f>` }
     ] }] };

@@ -1058,7 +1058,7 @@ test('todas las acciones de moderación exigen Administrador y las respuestas so
   const DB = new LocalD1();
   const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
   try {
-    for (const action of ['listar', 'inspeccionar', 'cancelar', 'sincronizar', 'acciones']) {
+    for (const action of ['listar', 'inspeccionar', 'cancelar', 'sincronizar', 'acciones', 'ajustar', 'anular', 'anular_varias', 'anular_ultima', 'confirmar', 'operacion']) {
       for (const permissions of ['0', '32', '-1', 'invalid']) {
         const denied = await interaction(env, adminInput(`denied-${action}-${permissions}`, action, {}, { member: { user: { id: 'ordinary' }, permissions } }));
         assert.equal(denied.data.flags, 64);
@@ -1252,5 +1252,196 @@ test('listas y auditoría administrativas están paginadas, filtran por estado y
     assert.match((await interaction(env, adminInput('invalid-state', 'listar', { estado: 'invalid' }))).data.content, /estado válido/);
     assert.match((await interaction(env, adminInput('invalid-id', 'inspeccionar', { propuesta: '`bad`' }))).data.content, /ID de propuesta válido/);
     assert.match((await interaction(env, adminInput('out-of-range', 'acciones', { pagina: 3 }))).data.content, /2 página/);
+  } finally { DB.close(); }
+});
+
+const operationCode = (view) => view.data.components[0].components[0].custom_id.split(':')[2];
+const publicQuery = (name, user = 'target') => ({ ...base(user), type: 2, data: { name, options: [{ name: 'usuario', value: user }] } });
+function seedCorrection(DB, id, amount, status = 'approved', guild = 'guild-1', created = 100) {
+  DB.db.prepare(`INSERT INTO proposals(id,guild_id,channel_id,target_id,proposer_id,amount,reason,created_at,expires_at,status)
+    VALUES (?,?,'channel-1','target','creator',?, ?, ?,unixepoch()+86400,?)`).run(id,guild,amount,`Motivo ${id}`,created,status);
+}
+
+test('ajustes administrativos: vista privada, confirmación única, signos y consultas públicas coherentes', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (const amount of [0, 1000001, -1000001, 1.5]) {
+      const invalid = await interaction(env, adminInput(`invalid-adjust-${amount}`, 'ajustar', { usuario: 'target', puntos: amount, motivo: 'Prueba privada' }));
+      assert.match(invalid.data.content, /enteros/);
+    }
+    for (const [index, amount] of [250, -100].entries()) {
+      const request = adminInput(`adjust-${index}`, 'ajustar', { usuario: 'target', puntos: amount, motivo: 'Motivo confidencial' });
+      const view = await interaction(env, request); const code = operationCode(view);
+      assert.equal(view.data.flags, 64);
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, index);
+      assert.equal(operationCode(await interaction(env, request)), code);
+      const confirmed = adminInput(`confirm-adjust-${index}`, 'confirmar', { codigo: code });
+      const results = await Promise.all([interaction(env, confirmed), interaction(env, { ...confirmed, id: `parallel-adjust-${index}` })]);
+      assert.ok(results.some(result => /aplicada y auditada/.test(result.data.content)));
+      await interaction(env, confirmed);
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, index + 1);
+    }
+    assert.equal(DB.db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status='approved'").get().n, 150);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_adjustments').get().n, 2);
+    for (const name of ['perfil', 'historial', 'votaciones', 'ranking']) {
+      const view = await interaction(env, publicQuery(name));
+      assert.doesNotMatch(JSON.stringify(view), /Motivo confidencial/);
+      if (name !== 'ranking') assert.match(JSON.stringify(view), /administrativo/i);
+      if (name === 'perfil' || name === 'ranking') assert.match(JSON.stringify(view), /150/);
+    }
+    const audit = await interaction(env, adminInput('adjust-audit', 'acciones'));
+    assert.match(JSON.stringify(audit), /Motivo confidencial/);
+  } finally { DB.close(); }
+});
+
+test('anular una resta de prueba devuelve puntos y retira historia, votos y ambos mensajes públicos', async (t) => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex, DISCORD_BOT_TOKEN: 'local-test' };
+  const edits = [];
+  mockDiscord(t, (_url, options) => { edits.push(JSON.parse(options.body)); return Response.json({ id: '999' }); });
+  try {
+    seedCorrection(DB, 'baseline', 200); seedCorrection(DB, 'trial', -100);
+    DB.db.exec("UPDATE proposals SET message_id='123' WHERE id='trial'; INSERT INTO proposal_notifications(proposal_id,state,message_id) VALUES ('trial','sent','456'); INSERT INTO votes VALUES ('trial','target','yes')");
+    const preview = await interaction(env, adminInput('void-preview', 'anular', { propuesta: 'trial', motivo: 'Era una prueba privada' }));
+    assert.match(JSON.stringify(preview), /efecto \+100/);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='trial'").get().status, 'approved');
+    const code = operationCode(preview);
+    const button = { ...base('administrator'), id: 'void-confirm', type: 3, member: { user: { id: 'administrator' }, permissions: '8' }, message: { flags: 64 }, data: { custom_id: `admin:confirm:${code}` } };
+    assert.match((await interaction(env, button)).data.content, /aplicada y auditada/);
+    await interaction(env, button);
+    assert.equal(DB.db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status='approved'").get().n, 200);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='trial'").get().status, 'voided');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 1);
+    assert.equal(edits.length, 2);
+    assert.ok(edits.every(edit => !JSON.stringify(edit).includes('Motivo trial') && !JSON.stringify(edit).includes('Era una prueba privada')));
+    for (const name of ['perfil', 'historial', 'votaciones', 'ranking']) {
+      const view = await interaction(env, publicQuery(name));
+      assert.doesNotMatch(JSON.stringify(view), /Motivo trial/);
+      if (name === 'perfil' || name === 'ranking') assert.match(JSON.stringify(view), /200/);
+      if (name === 'perfil') assert.equal(view.data.embeds[0].fields.find(f => f.name.includes('Votos registrados')).value, '0');
+    }
+    const inspect = await interaction(env, adminInput('void-inspect', 'inspeccionar', { propuesta: 'trial' }));
+    assert.match(JSON.stringify(inspect), /Motivo trial/);
+    const audit = await interaction(env, adminInput('void-audit', 'acciones', { propuesta: 'trial' }));
+    assert.match(JSON.stringify(audit), /Era una prueba privada/);
+  } finally { DB.close(); }
+});
+
+test('anulación múltiple es atómica, deduplica IDs y bloquea cualquier selección modificada', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    seedCorrection(DB, 'positive', 100); seedCorrection(DB, 'negative', -40); seedCorrection(DB, 'pending', 30, 'open');
+    seedCorrection(DB, 'foreign', 50, 'approved', 'guild-2');
+    for (const [index, ids] of ['positive foreign', Array.from({ length: 11 }, (_, i) => `id${i}`).join(','), 'missing'].entries()) {
+      const result = await interaction(env, adminInput(`invalid-bulk-${index}`, 'anular_varias', { propuestas: ids, motivo: 'Prueba de selección' }));
+      assert.equal(result.data.components, undefined);
+    }
+    const values = { propuestas: 'positive, negative pending positive', motivo: 'Prueba múltiple' };
+    const preview = await interaction(env, adminInput('bulk-preview', 'anular_varias', values));
+    assert.match(JSON.stringify(preview), /Efecto total: -60/);
+    DB.db.exec("UPDATE proposals SET status='rejected' WHERE id='pending'");
+    const result = await interaction(env, adminInput('stale-confirm', 'confirmar', { codigo: operationCode(preview) }));
+    assert.match(result.data.content, /alguna propuesta cambió/);
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE status='voided'").get().n, 0);
+    const fresh = await interaction(env, adminInput('fresh-bulk', 'anular_varias', values));
+    await interaction(env, adminInput('bulk-confirm', 'confirmar', { codigo: operationCode(fresh) }));
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM proposals WHERE status='voided'").get().n, 3);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='foreign'").get().status, 'approved');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 4);
+  } finally { DB.close(); }
+});
+
+test('última propuesta fija destinatario e ID y dos vistas superpuestas nunca anulan dos veces', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    seedCorrection(DB, 'old', 20); seedCorrection(DB, 'latest', -10, 'approved', 'guild-1', 200);
+    const values = { usuario: 'target', motivo: 'Retirar última prueba' };
+    const a = operationCode(await interaction(env, adminInput('latest-a', 'anular_ultima', values)));
+    const b = operationCode(await interaction(env, adminInput('latest-b', 'anular_ultima', values)));
+    seedCorrection(DB, 'newer', 40, 'approved', 'guild-1', 300);
+    await Promise.all([interaction(env, adminInput('latest-confirm-a', 'confirmar', { codigo: a })), interaction(env, adminInput('latest-confirm-b', 'confirmar', { codigo: b }))]);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='latest'").get().status, 'voided');
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='newer'").get().status, 'approved');
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM admin_operations WHERE status='applied'").get().n, 1);
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM admin_operations WHERE status='stale'").get().n, 1);
+  } finally { DB.close(); }
+});
+
+test('confirmaciones verifican propietario, servidor, permiso actual, mensaje privado, descarte y vencimiento', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const preview = await interaction(env, adminInput('guard-preview', 'ajustar', { usuario: 'target', puntos: 10, motivo: 'Prueba de guardas' }));
+    const code = operationCode(preview);
+    const other = await interaction(env, adminInput('guard-owner', 'confirmar', { codigo: code }, { member: { user: { id: 'other-admin' }, permissions: '8' } }));
+    assert.match(other.data.content, /Solo el administrador/);
+    const foreign = await interaction(env, adminInput('guard-guild', 'confirmar', { codigo: code }, { guild_id: 'guild-2' }));
+    assert.match(foreign.data.content, /inexistente/);
+    for (const [permissions, flags] of [['32', 64], ['8', 0]]) {
+      const result = await interaction(env, { ...base('administrator'), type: 3, member: { user: { id: 'administrator' }, permissions }, message: { flags }, data: { custom_id: `admin:confirm:${code}` } });
+      assert.equal(result.data.flags, 64);
+    }
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 0);
+    const discarded = await interaction(env, { ...base('administrator'), type: 3, member: { user: { id: 'administrator' }, permissions: '8' }, message: { flags: 64 }, data: { custom_id: `admin:discard:${code}` } });
+    assert.match(discarded.data.content, /descartada/);
+    await interaction(env, adminInput('guard-after-discard', 'confirmar', { codigo: code }));
+    const expired = operationCode(await interaction(env, adminInput('expired-preview', 'ajustar', { usuario: 'target', puntos: -10, motivo: 'Vista vencida' })));
+    DB.db.exec('UPDATE admin_operations SET expires_at=0');
+    assert.match((await interaction(env, adminInput('expired-confirm', 'confirmar', { codigo: expired }))).data.content, /venció/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 0);
+  } finally { DB.close(); }
+});
+
+test('fallo a mitad del lote revierte ajuste y auditoría y permite confirmar otra vez', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const code = operationCode(await interaction(env, adminInput('rollback-preview', 'ajustar', { usuario: 'target', puntos: 70, motivo: 'Prueba atómica' })));
+    DB.db.exec("CREATE TRIGGER fail_adjustment BEFORE INSERT ON admin_adjustments BEGIN SELECT RAISE(ABORT,'local failure'); END");
+    await interaction(env, adminInput('rollback-confirm', 'confirmar', { codigo: code }));
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 0);
+    assert.equal(DB.db.prepare('SELECT status FROM admin_operations').get().status, 'pending');
+    DB.db.exec('DROP TRIGGER fail_adjustment');
+    await interaction(env, adminInput('rollback-retry', 'confirmar', { codigo: code }));
+    assert.equal(DB.db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status='approved'").get().n, 70);
+  } finally { DB.close(); }
+});
+
+test('aviso en vuelo al anular se guarda y neutraliza; los pendientes no se publican', async (t) => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex, DISCORD_BOT_TOKEN: 'local-test' };
+  env.MESSAGE_SYNC = messageSyncBinding(env);
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  let started; const posted = new Promise(resolve => { started = resolve; });
+  const patched = [];
+  mockDiscord(t, async (_url, options) => {
+    if (options.method === 'POST') { started(); await gate; return Response.json({ id: 'late-notice' }); }
+    patched.push(JSON.parse(options.body)); return Response.json({});
+  });
+  try {
+    seedCorrection(DB, 'in-flight', -25); seedCorrection(DB, 'unsent', 20);
+    DB.db.exec("INSERT INTO proposal_notifications(proposal_id) VALUES ('in-flight'),('unsent')");
+    const sending = sendClosureNotifications(env, 'in-flight');
+    await posted;
+    const code = operationCode(await interaction(env, adminInput('late-preview', 'anular_varias', { propuestas: 'in-flight unsent', motivo: 'Anular avisos de prueba' })));
+    await interaction(env, adminInput('late-confirm', 'confirmar', { codigo: code }));
+    assert.equal(DB.db.prepare("SELECT state FROM proposal_notifications WHERE proposal_id='unsent'").get().state, 'cancelled');
+    release(); await sending;
+    await sendClosureNotifications(env, 'unsent');
+    assert.equal(patched.length, 1);
+    assert.match(patched[0].content, /anulada/);
+    assert.equal(DB.db.prepare("SELECT message_id FROM proposal_notifications WHERE proposal_id='in-flight'").get().message_id, 'late-notice');
+  } finally { release(); DB.close(); }
+});
+
+test('consultas anteriores a la migración administrativa funcionan sin crear tablas', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    seedCorrection(DB, 'legacy-approved', 70);
+    DB.db.exec('DROP TABLE admin_adjustments; DROP TABLE admin_operation_items; DROP TABLE admin_operations');
+    for (const name of ['perfil', 'historial', 'votaciones', 'ranking']) {
+      const view = await interaction(env, publicQuery(name));
+      assert.ok(view.data.embeds);
+    }
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='admin_adjustments'").get().n, 0);
+    const preview = await interaction(env, adminInput('migration-adjust', 'ajustar', { usuario: 'target', puntos: 10, motivo: 'Migración compatible' }));
+    await interaction(env, adminInput('migration-confirm', 'confirmar', { codigo: operationCode(preview) }));
+    assert.equal(DB.db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status='approved'").get().n, 80);
   } finally { DB.close(); }
 });

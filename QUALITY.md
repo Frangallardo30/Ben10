@@ -10,6 +10,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - Cierre con cuatro votos del rol cuando esa opción empata o lidera, y con seis cuando va perdiendo, en ambos sentidos.
 - Bloqueo de nuevos votos después del cierre y separación por servidor.
 - Panel exclusivo de Administrador, respuestas efímeras, confirmación, auditoría por servidor, rollback, reentregas y carreras entre cancelación administrativa y voto decisivo.
+- Ajustes positivos/negativos confirmados, selección individual/múltiple/última congelada, exclusión pública coherente, permisos actuales y propiedad, vencimiento, descarte, rollback, confirmaciones repetidas/concurrentes y neutralización de avisos en vuelo.
 - Configuración privada por servidor, permisos Administrar servidor/Administrador, límites y ediciones concurrentes, permisos efectivos del canal y reglas de propuestas inmutables tras cambios.
 - Propuestas duplicadas por destinatario/motivo/servidor, envíos concurrentes, estados que no bloquean, reintento tardío y conservación de duplicados heredados.
 - Historial de votaciones de todos los estados, ámbito de destinatario y servidor, vencimiento mostrado sin escrituras, paginación estable, fechas heredadas y límites del embed.
@@ -25,7 +26,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 
 `node scripts/check-message-sync-runtime.mjs` ejecuta una prueba adicional con workerd, D1 y el Durable Object locales usando las dependencias fijadas de Wrangler. Retiene una edición abierta mientras llega el cierre y verifica que solo haya una edición en vuelo y que la última retire los botones. Discord está simulado y no se hacen solicitudes remotas.
 
-`node scripts/check-deferred-runtime.mjs` comprueba con workerd, D1 y webhooks simulados el PING firmado y el rechazo de firmas inválidas, el flujo completo de propuesta/votos/perfil/ranking/votaciones con los bindings locales, el reconocimiento diferido, la publicación del resultado, la reentrega de propuestas y votos, la cancelación de una propuesta abierta y una respuesta de error ante un fallo real de SQL en D1 local.
+`node scripts/check-deferred-runtime.mjs` comprueba con workerd, D1 y webhooks simulados el PING firmado y el rechazo de firmas inválidas, el flujo completo de propuesta/votos/perfil/ranking/votaciones con los bindings locales, el reconocimiento diferido, la publicación del resultado, la reentrega de propuestas y votos, la cancelación de una propuesta abierta y ajustes/anulaciones confirmados con botones privados y una respuesta de error ante un fallo real de SQL en D1 local.
 
 `node scripts/check-proposal-dates-runtime.mjs` ejecuta dos instancias de Worker sobre una base D1 local heredada, comprueba la migración concurrente y repetida y conserva el orden y las fechas aunque se modifique el vencimiento. Usa datos representativos locales; no accede a producción.
 
@@ -44,7 +45,7 @@ La [guía de operación en Cloudflare](docs/operations/cloudflare.md) describe l
 
 Antes de probar `/config cambiar`, usá un servidor o canal de prueba autorizado: verificá que una persona sin Administrar servidor no pueda editar, que `/info` refleje el cambio y que una propuesta anterior conserve su rol y umbrales. `canal_libre:true` permite retirar la restricción de canal sin cambiar reglas de propuestas existentes.
 
-Para la moderación, comprobá que Administrar servidor sin Administrador no habilite el panel y que solo una cancelación confirmada cambie el mensaje. La auditoría debe ser privada. Seguí [la guía del panel](docs/operations/moderation.md); esta versión no deshace propuestas aprobadas ni corrige puntos.
+Para la moderación, comprobá que Administrar servidor sin Administrador no habilite el panel y que solo una cancelación confirmada cambie el mensaje. La auditoría debe ser privada. Seguí [la guía del panel](docs/operations/moderation.md); probá un ajuste y anulalo con su vista previa, comparando aura e historial antes y después. Confirmá también que anular una resta devuelve puntos y que sus mensajes quedan neutros.
 
 ## Límites conocidos
 

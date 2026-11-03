@@ -1,3 +1,4 @@
+import { OPERATIONS_SCHEMA_SQL, ITEMS_SCHEMA_SQL, ADJUSTMENTS_SCHEMA_SQL, OPERATIONS_INDEX_SQL } from './admin-operations.js';
 import { ADMIN_ACTIONS_SCHEMA_SQL, ADMIN_ACTIONS_INDEX_SQL } from './moderation.js';
 import { migrateGuildConfig } from './guild-config.js';
 import { CREATION_ATTEMPTS_SCHEMA_SQL, DUPLICATE_INDEX_SQL } from './proposals.js';
@@ -36,7 +37,11 @@ async function prepare(db) {
     db.prepare(DUPLICATE_INDEX_SQL),
     db.prepare(CREATION_ATTEMPTS_SCHEMA_SQL),
     db.prepare(ADMIN_ACTIONS_SCHEMA_SQL),
-    db.prepare(ADMIN_ACTIONS_INDEX_SQL)
+    db.prepare(ADMIN_ACTIONS_INDEX_SQL),
+    db.prepare(OPERATIONS_SCHEMA_SQL),
+    db.prepare(ITEMS_SCHEMA_SQL),
+    db.prepare(ADJUSTMENTS_SCHEMA_SQL),
+    db.prepare(OPERATIONS_INDEX_SQL)
   ]);
   await db.batch([
     db.prepare("INSERT OR IGNORE INTO role_votes(proposal_id, user_id, choice) SELECT v.proposal_id, v.user_id, v.choice FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.status = 'open' AND EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),

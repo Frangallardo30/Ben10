@@ -83,3 +83,30 @@ CREATE TABLE IF NOT EXISTS admin_actions (
   result_status TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS admin_actions_scope ON admin_actions(guild_id, created_at DESC, interaction_id DESC);
+CREATE TABLE IF NOT EXISTS admin_operations (
+  id TEXT PRIMARY KEY,
+  preview_interaction_id TEXT NOT NULL UNIQUE,
+  guild_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  processed_at INTEGER,
+  confirmation_interaction_id TEXT
+);
+CREATE TABLE IF NOT EXISTS admin_operation_items (
+  operation_id TEXT NOT NULL,
+  proposal_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  previous_status TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  effect INTEGER NOT NULL,
+  PRIMARY KEY(operation_id, proposal_id)
+);
+CREATE TABLE IF NOT EXISTS admin_adjustments (
+  proposal_id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS admin_operations_scope ON admin_operations(guild_id, status, processed_at DESC);

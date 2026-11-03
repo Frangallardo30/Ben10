@@ -203,8 +203,31 @@ try {
   assert.deepEqual(await dispatch(panel('100065', 'sincronizar', { propuesta: '100060', confirmar: true })), { type: 5, data: { flags: 64 } });
   await until(() => events.some((event) => event.url.includes('runtime-admin-100065') && event.body?.content?.includes('solicitada y auditada')));
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 2);
+  // Administrative corrections exercise real workerd SQL and private component ACKs.
+  const adjustment = panel('100070', 'ajustar', { usuario: 'target', puntos: -100, motivo: 'Private correction test' });
+  assert.deepEqual(await dispatch(adjustment), { type: 5, data: { flags: 64 } });
+  await until(() => events.some(event => event.url.includes('runtime-admin-100070') && event.body?.components?.length));
+  const previewBody = events.find(event => event.url.includes('runtime-admin-100070') && event.body?.components?.length).body;
+  const correctionCode = previewBody.components[0].components[0].custom_id.split(':')[2];
+  const confirmButton = { ...adjustment, id: '100071', token: 'runtime-correction-button', type: 3,
+    message: { flags: 64 }, data: { custom_id: `admin:confirm:${correctionCode}` } };
+  assert.deepEqual(await dispatch(confirmButton), { type: 6 });
+  await until(() => events.some(event => event.url.includes('runtime-correction-button') && event.body?.content?.includes('aplicada y auditada')));
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_adjustments').first()).n, 1);
+  assert.equal((await db.prepare('SELECT amount FROM proposals WHERE id = ?').bind(`admin-${correctionCode}`).first()).amount, -100);
+  assert.deepEqual(await dispatch(confirmButton), { type: 6 });
+  await until(() => events.some(event => event.url.includes('runtime-correction-button') && event.body?.content?.includes('ya fue procesada')));
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_adjustments').first()).n, 1);
+  assert.deepEqual(await dispatch(panel('100072', 'anular', { propuesta: `admin-${correctionCode}`, motivo: 'Remove trial subtraction' })), { type: 5, data: { flags: 64 } });
+  await until(() => events.some(event => event.url.includes('runtime-admin-100072') && event.body?.components?.length));
+  const voidCode = events.find(event => event.url.includes('runtime-admin-100072') && event.body?.components?.length).body.components[0].components[0].custom_id.split(':')[2];
+  assert.deepEqual(await dispatch(panel('100073', 'confirmar', { codigo: voidCode })), { type: 5, data: { flags: 64 } });
+  await until(() => events.some(event => event.url.includes('runtime-admin-100073') && event.body?.content?.includes('aplicada y auditada')));
+  assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind(`admin-${correctionCode}`).first()).status, 'voided');
+  assert.equal((await db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status = 'approved'").first()).n, 200);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM admin_operations WHERE status = 'applied'").first()).n, 2);
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));
-  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking/votaciones on D1 and Durable Objects, and enforces administrator-only audited moderation, per-guild proposal rules, concurrent duplicate creation, retries, cancellation and D1 failure. Discord mocked; no remote requests.');
+  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking/votaciones on D1 and Durable Objects, and enforces administrator-only audited moderation and confirmed aura adjustments/voids, per-guild proposal rules, concurrent duplicate creation, retries, cancellation and D1 failure. Discord mocked; no remote requests.');
 } finally { await runtime.dispose(); }

@@ -3,6 +3,16 @@ import { AURA_VOTER_ROLE_ID, VOTES_TO_CLOSE, VOTES_TO_OVERRIDE } from './voting.
 const label = (amount) => `${amount > 0 ? '+' : ''}${amount}`;
 
 export function display(proposal, votes) {
+  if (proposal.status === 'voided') return {
+    allowed_mentions: { parse: [] }, embeds: [{ title: '⛔ Propuesta anulada',
+      description: 'Esta propuesta fue retirada del historial visible. Sus puntos no cuentan para el aura.',
+      color: 0x747f8d }], components: []
+  };
+  if (proposal.administrative) return {
+    allowed_mentions: { parse: [] }, embeds: [{ title: `🛠️ Ajuste administrativo: ${label(proposal.amount)}`,
+      description: `<@${proposal.target_id}> · Ajuste aplicado por administración, sin votación.`,
+      color: 0x747f8d, fields: [{ name: 'Estado', value: 'Aplicado' }] }], components: []
+  };
   const closed = proposal.status !== 'open';
   const normal = proposal.votes_to_close ?? VOTES_TO_CLOSE;
   const override = proposal.votes_to_override ?? VOTES_TO_OVERRIDE;

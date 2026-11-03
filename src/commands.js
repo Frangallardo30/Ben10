@@ -31,7 +31,7 @@ export const commands = [
       { type: 6, name: 'usuario', description: 'Persona que recibe las propuestas', required: false },
       { type: 3, name: 'estado', description: 'Estado de las propuestas', required: false, choices: [
         { name: 'Abiertas', value: 'open' }, { name: 'Aprobadas', value: 'approved' }, { name: 'Rechazadas', value: 'rejected' },
-        { name: 'Vencidas', value: 'expired' }, { name: 'Canceladas', value: 'cancelled' }
+        { name: 'Vencidas', value: 'expired' }, { name: 'Canceladas', value: 'cancelled' }, { name: 'Anuladas', value: 'voided' }
       ] },
       { type: 4, name: 'pagina', description: 'Página (8 propuestas por página)', min_value: 1, max_value: 1000000, required: false }
     ] },
@@ -51,6 +51,29 @@ export const commands = [
     { type: 1, name: 'acciones', description: 'Consulta la auditoría administrativa del servidor', options: [
       { type: 3, name: 'propuesta', description: 'Filtrar por ID de propuesta', max_length: 100, required: false },
       { type: 4, name: 'pagina', description: 'Página (8 acciones por página)', min_value: 1, max_value: 1000000, required: false }
+    ] },
+    { type: 1, name: 'ajustar', description: 'Prepara un ajuste de aura sin votación (requiere confirmación)', options: [
+      { type: 6, name: 'usuario', description: 'Persona que recibe el ajuste', required: true },
+      { type: 4, name: 'puntos', description: 'Sumar o restar de 1 a 1000000 puntos', min_value: -1000000, max_value: 1000000, required: true },
+      { type: 3, name: 'motivo', description: 'Motivo privado para la auditoría', min_length: 3, max_length: 250, required: true }
+    ] },
+    { type: 1, name: 'anular', description: 'Prepara retirar una propuesta y revertir sus puntos', options: [
+      { type: 3, name: 'propuesta', description: 'ID concreto de la propuesta', max_length: 100, required: true },
+      { type: 3, name: 'motivo', description: 'Motivo privado para la auditoría', min_length: 3, max_length: 250, required: true }
+    ] },
+    { type: 1, name: 'anular_varias', description: 'Prepara anular hasta 10 propuestas seleccionadas', options: [
+      { type: 3, name: 'propuestas', description: 'IDs separados por comas o espacios (máximo 10)', max_length: 1024, required: true },
+      { type: 3, name: 'motivo', description: 'Motivo privado para la auditoría', min_length: 3, max_length: 250, required: true }
+    ] },
+    { type: 1, name: 'anular_ultima', description: 'Prepara retirar la última propuesta recibida por alguien', options: [
+      { type: 6, name: 'usuario', description: 'Persona que recibió la propuesta', required: true },
+      { type: 3, name: 'motivo', description: 'Motivo privado para la auditoría', min_length: 3, max_length: 250, required: true }
+    ] },
+    { type: 1, name: 'confirmar', description: 'Confirma la selección fija de una vista previa propia', options: [
+      { type: 3, name: 'codigo', description: 'Código de la vista previa (vence en 10 minutos)', max_length: 100, required: true }
+    ] },
+    { type: 1, name: 'operacion', description: 'Consulta la selección y resultado de una operación', options: [
+      { type: 3, name: 'codigo', description: 'Código de la operación administrativa', max_length: 100, required: true }
     ] }
   ] },
   { name: 'info', description: 'Explica los comandos y las reglas de votación de Ben 10' }

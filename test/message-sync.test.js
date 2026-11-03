@@ -156,3 +156,26 @@ test('dos cambios simultáneos conservan un solo voto por persona y el último r
     assert.equal(syncState(env).revision, syncState(env).synced_revision);
   } finally { env.DB.close(); }
 });
+
+test('cron reintenta neutralizar un aviso conocido aunque falte el mensaje original', async (t) => {
+  const env = setup();
+  const edits = [];
+  let unavailable = true;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (unavailable) return new Response('', { status: 503 });
+    edits.push({ url, body: JSON.parse(options.body) }); return Response.json({});
+  });
+  try {
+    env.DB.db.exec("UPDATE proposals SET status='voided',message_id=NULL; INSERT INTO proposal_notifications(proposal_id,state,message_id) VALUES ('proposal','sent','456')");
+    await assert.rejects(requestMessageSync(env, 'proposal'));
+    assert.equal(env.DB.db.prepare('SELECT synced_revision FROM proposal_message_sync').get().synced_revision, 0);
+    unavailable = false;
+    env.DB.db.exec('UPDATE proposal_message_sync SET retry_at=0');
+    await retryMessageSync(env);
+    assert.equal(edits.length, 1);
+    assert.ok(edits[0].url.endsWith('/messages/456'));
+    assert.match(edits[0].body.content, /anulada/);
+    const row = env.DB.db.prepare('SELECT revision,synced_revision FROM proposal_message_sync').get();
+    assert.equal(row.synced_revision, row.revision);
+  } finally { env.DB.close(); }
+});

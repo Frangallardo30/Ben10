@@ -1,3 +1,4 @@
+import { QUEUE_MESSAGE_SYNC_SQL, requestMessageSync } from './message-sync.js';
 import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, reportFailure } from './diagnostics.js';
 // A claimed delivery is never automatically reclaimed: after a lost response,
 // Discord may already have created the message. Prefer a missing notice to a duplicate.
@@ -21,7 +22,8 @@ export async function sendClosureNotifications(env, proposalId) {
     ORDER BY n.retry_at, p.id LIMIT 20`).bind(proposalId ?? null, proposalId ?? null).all();
   for (const proposal of pending.results) {
     const claim = await env.DB.prepare(`UPDATE proposal_notifications SET state = 'sending'
-      WHERE proposal_id = ? AND state = 'pending' AND retry_at <= unixepoch()`)
+      WHERE proposal_id = ? AND state = 'pending' AND retry_at <= unixepoch()
+      AND EXISTS (SELECT 1 FROM proposals WHERE id = proposal_notifications.proposal_id AND status IN ('approved', 'rejected'))`)
       .bind(proposal.id).run();
     if (claim.meta.changes !== 1) continue;
     try {
@@ -51,8 +53,13 @@ export async function sendClosureNotifications(env, proposalId) {
       const message = await discordJSON(response);
       await env.DB.prepare("UPDATE proposal_notifications SET state = 'sent', message_id = ? WHERE proposal_id = ?")
         .bind(message.id ?? null, proposal.id).run();
+      const current = await env.DB.prepare('SELECT status FROM proposals WHERE id = ?').bind(proposal.id).first();
+      if (current?.status === 'voided') {
+        await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(proposal.id).run();
+        await requestMessageSync(env, proposal.id);
+      }
     } catch (error) {
-      // Leave 'sending' durable, including if recording the response failed.
+      // Keep the durable delivery state; never blindly repost after an uncertain result.
       reportFailure('CLOSURE_NOTICE_UNCERTAIN', error);
     }
   }

@@ -1,3 +1,4 @@
+import { administrativeExpression, confirmOperation } from './admin-operations.js';
 import { isAdministrator, moderate } from './moderation.js';
 import { canManageGuild, getGuildConfig, changeGuildConfig, configSummary } from './guild-config.js';
 import { INSERT_PROPOSAL_SQL, RECORD_CREATION_ATTEMPT_SQL, SNAPSHOT_RULES_SQL } from './proposals.js';
@@ -89,7 +90,7 @@ async function ensureCommandsRegistered(env) {
     return;
   }
   await prepareWrites(env.DB);
-  const version = 'moderation-v9';
+  const version = 'admin-corrections-v10';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
   if (saved?.value === version) {
@@ -146,11 +147,11 @@ async function command(interaction, env, ctx) {
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
           { name: '📋 /votaciones', value: 'Lista todas las propuestas recibidas por `usuario` (o por vos), con estado y proponente. Incluye abiertas, aprobadas, rechazadas, vencidas y canceladas; 8 por página.', inline: false },
           { name: '🏆 /ranking', value: 'Muestra las 10 personas con más aura de este servidor. Solo cuentan los cambios aprobados; los empates comparten puesto.', inline: false },
-          ...(isAdministrator(interaction) ? [{ name: '🛡️ /moderar', value: 'Panel privado: listar, inspeccionar, cancelar abiertas, sincronizar mensajes y consultar auditoría. Cancelar/sincronizar requiere confirmar:true.', inline: false }] : []),
+          ...(isAdministrator(interaction) ? [{ name: '🛡️ /moderar', value: 'Panel privado: listar, inspeccionar, cancelar abiertas, sincronizar mensajes y consultar auditoría. Cancelar/sincronizar requiere confirmar:true. Ajustar y anular usan una vista previa con confirmación ligada a su selección.', inline: false }] : []),
           { name: '⚙️ /config', value: 'Ver reglas del servidor o cambiarlas con Administrar servidor. Los cambios solo afectan propuestas nuevas.', inline: false },
           { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. ${rules?.voter_role_id ? `Los votos del rol <@&${rules.voter_role_id}> cierran con ${rules.votes_to_close} iguales si esa opción empata o lidera; si va perdiendo, necesita ${rules.votes_to_override}.` : 'Un administrador debe configurar el rol decisor con /config cambiar antes de crear propuestas.'} ${rules?.channel_id ? `Canal de propuestas nuevas: <#${rules.channel_id}>.` : 'Se permiten propuestas en cualquier canal habilitado para el bot.'} Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
-        footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
+        footer: { text: 'El aura incluye propuestas aprobadas y ajustes administrativos confirmados.' }
       }]
     } });
   }
@@ -172,22 +173,23 @@ async function command(interaction, env, ctx) {
     } });
   }
   if (interaction.data.name === 'votaciones') {
+    const administrative = await administrativeExpression(env.DB);
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const page = option(interaction, 'pagina') ?? 1;
-    const count = await env.DB.prepare('SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ?')
+    const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status <> 'voided'")
       .bind(interaction.guild_id, user).first();
     const total = count.total;
     const pages = Math.max(1, Math.ceil(total / 8));
     if (page > pages) return ephemeral(`Ese perfil tiene ${pages} página${pages === 1 ? '' : 's'} de votaciones.`);
     const date = await historyDateExpression(env.DB);
-    const rows = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at,
+    const rows = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at, ${administrative} AS administrative,
       CASE WHEN status = 'open' AND expires_at <= unixepoch() THEN 'expired' ELSE status END AS effective_status
-      FROM proposals WHERE guild_id = ? AND target_id = ? ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`)
+      FROM proposals WHERE guild_id = ? AND target_id = ? AND status <> 'voided' ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`)
       .bind(interaction.guild_id, user, (page - 1) * 8).all();
     const states = { approved: '✅ Aprobada', rejected: '❌ Rechazada', open: '🗳️ Abierta', expired: '⌛ Vencida', cancelled: '⚪ Cancelada' };
     const entries = rows.results.map((item) => {
       const reason = item.reason.replace(/\s+/g, ' ').trim().slice(0, 250);
-      return `**${states[item.effective_status] ?? 'Estado desconocido'}** · Propuesta de **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+      return `**${item.administrative ? '🛠️ Ajuste administrativo' : states[item.effective_status] ?? 'Estado desconocido'}** · Propuesta de **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
     });
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
@@ -195,11 +197,12 @@ async function command(interaction, env, ctx) {
         title: '📋 Historial de votaciones',
         description: `**Propuestas recibidas por <@${user}>**\n\n${entries.length ? entries.join('\n\n') : 'Todavía no hay propuestas para esta persona en el servidor.'}`,
         color: 0xff9c53,
-        footer: { text: `Página ${page} de ${pages} · ${formatNumber(total)} propuestas · Solo las aprobadas cambian el aura.` }
+        footer: { text: `Página ${page} de ${pages} · ${formatNumber(total)} propuestas · El aura incluye aprobaciones y ajustes administrativos.` }
       }]
     } });
   }
   if (interaction.data.name === 'historial') {
+    const administrative = await administrativeExpression(env.DB);
     const user = option(interaction, 'usuario') ?? actor(interaction);
     const page = option(interaction, 'pagina') ?? 1;
     const count = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
@@ -207,17 +210,17 @@ async function command(interaction, env, ctx) {
     const pages = Math.max(1, Math.ceil(total / 8));
     if (page > pages) return ephemeral(`Ese perfil tiene ${pages} página${pages === 1 ? '' : 's'} de historial.`);
     const date = await historyDateExpression(env.DB);
-    const history = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`).bind(interaction.guild_id, user, (page - 1) * 8).all();
+    const history = await env.DB.prepare(`SELECT amount, reason, proposer_id, ${date} AS created_at, ${administrative} AS administrative FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 8 OFFSET ?`).bind(interaction.guild_id, user, (page - 1) * 8).all();
     const identity = profileIdentity(interaction, user);
     const entries = history.results.map((item) => {
       const reason = item.reason.replace(/\s+/g, ' ').trim();
-      return `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
+      return `${item.administrative ? '🛠️ Ajuste administrativo' : item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)} puntos** · <t:${item.created_at}:d>\n${reason}\n*Propuesto por <@${item.proposer_id}>*`;
     });
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
       embeds: [{
         author: { name: `${identity.name} · Historial de aura`, icon_url: identity.avatar },
-        description: `**Movimientos aprobados de <@${user}>**\n\n${entries.length ? entries.join('\n\n') : 'Todavía no hay cambios de aura aprobados.'}`,
+        description: `**Movimientos aplicados de <@${user}>**\n\n${entries.length ? entries.join('\n\n') : 'Todavía no hay cambios de aura aprobados.'}`,
         color: 0xff9c53,
         thumbnail: { url: identity.avatar },
         footer: { text: `Página ${page} de ${pages} · ${formatNumber(total)} movimientos${page < pages ? ' · Usá la opción pagina para continuar' : ''}` }
@@ -225,23 +228,24 @@ async function command(interaction, env, ctx) {
     } });
   }
   if (interaction.data.name === 'perfil') {
+    const administrative = await administrativeExpression(env.DB);
     const user = option(interaction, 'usuario') ?? actor(interaction);
-    const score = await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'").bind(interaction.guild_id, user).first();
+    const score = await env.DB.prepare(`SELECT COALESCE(SUM(amount), 0) AS aura, COUNT(*) AS approved, COALESCE(SUM(CASE WHEN ${administrative} THEN 1 ELSE 0 END), 0) AS adjustments FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'`).bind(interaction.guild_id, user).first();
     const pending = await env.DB.prepare("SELECT COUNT(*) AS total FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'open'").bind(interaction.guild_id, user).first();
     const date = await historyDateExpression(env.DB);
-    const history = await env.DB.prepare(`SELECT amount, reason, ${date} AS created_at FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
+    const history = await env.DB.prepare(`SELECT amount, reason, ${date} AS created_at, ${administrative} AS administrative FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved' ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
     const stats = await env.DB.prepare(`SELECT
       (SELECT COUNT(*) FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'rejected') AS rejected,
-      (SELECT COUNT(*) FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.guild_id = ? AND v.user_id = ?) AS votes`)
+      (SELECT COUNT(*) FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.guild_id = ? AND v.user_id = ? AND p.status <> 'voided') AS votes`)
       .bind(interaction.guild_id, user, interaction.guild_id, user).first();
-    const evolution = await env.DB.prepare(`SELECT amount, created_at, balance FROM (
-      SELECT id, amount, ${date} AS created_at,
+    const evolution = await env.DB.prepare(`SELECT amount, created_at, balance, administrative FROM (
+      SELECT id, amount, ${date} AS created_at, ${administrative} AS administrative,
         SUM(amount) OVER (ORDER BY ${date} ASC, id ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS balance
       FROM proposals WHERE guild_id = ? AND target_id = ? AND status = 'approved'
     ) ORDER BY created_at DESC, id DESC LIMIT 5`).bind(interaction.guild_id, user).all();
-    const trajectory = evolution.results.reverse().map((item) => `<t:${item.created_at}:d> · ${label(item.amount)} → **${formatNumber(item.balance)}** puntos`);
+    const trajectory = evolution.results.reverse().map((item) => `<t:${item.created_at}:d> · ${label(item.amount)} → **${formatNumber(item.balance)}** puntos${item.administrative ? ' · Ajuste administrativo' : ''}`);
     const identity = profileIdentity(interaction, user);
-    const lines = history.results.map((item) => `${item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
+    const lines = history.results.map((item) => `${item.administrative ? '🛠️' : item.amount >= 0 ? '🟢' : '🔴'} **${label(item.amount)}** · ${item.reason.slice(0, 100)}`);
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
       embeds: [{
@@ -250,12 +254,13 @@ async function command(interaction, env, ctx) {
         color: 0xff9c53,
         thumbnail: { url: identity.avatar },
         fields: [
-          { name: '✅ Cambios aprobados', value: formatNumber(score?.approved ?? 0), inline: true },
+          { name: '✅ Cambios aplicados', value: formatNumber(score?.approved ?? 0), inline: true },
           { name: '🗳️ Votaciones abiertas', value: formatNumber(pending?.total ?? 0), inline: true },
           { name: '📜 Últimos movimientos', value: lines.length ? lines.join('\n') : 'Todavía no hay cambios aprobados.', inline: false },
           { name: '❌ Propuestas recibidas rechazadas', value: formatNumber(stats.rejected), inline: true },
           { name: '🗳️ Votos registrados', value: formatNumber(stats.votes), inline: true },
-          { name: '📈 Evolución del aura', value: trajectory.length ? trajectory.join('\n') : 'Todavía no hay cambios aprobados.', inline: false }
+          { name: '📈 Evolución del aura', value: trajectory.length ? trajectory.join('\n') : 'Todavía no hay cambios aprobados.', inline: false },
+          { name: '🛠️ Ajustes administrativos', value: formatNumber(score?.adjustments ?? 0), inline: true }
         ],
         footer: { text: 'Evolución: últimos 5 cambios aprobados, por fecha de creación. Un voto registrado por propuesta.' }
       }]
@@ -358,6 +363,13 @@ async function cancelProposal(interaction, env, ctx) {
 
 async function performInteraction(interaction, env, ctx) {
   const isCommand = interaction.type === 2;
+  if (!isCommand && interaction.data.custom_id?.startsWith('admin:')) {
+    const [, action, id] = interaction.data.custom_id.split(':');
+    await prepareWrites(env.DB);
+    const data = await confirmOperation(interaction, env, ctx, id, action === 'discard');
+    await editDeferred(interaction, env, { embeds: [], ...data, components: [] });
+    return;
+  }
   let result;
   if (isCommand) result = await command(interaction, env, ctx);
   else if (interaction.data.custom_id.split(':')[1] === 'cancel') result = await cancelProposal(interaction, env, ctx);
@@ -394,7 +406,7 @@ async function finishInteraction(interaction, env, ctx) {
   } catch (error) {
     reportFailure('INTERACTION_FAILED', error);
     const configChange = isCommand && interaction.data.name === 'config' && interaction.data.options?.[0]?.name === 'cambiar';
-    const adminChange = isCommand && interaction.data.name === 'moderar' && ['cancelar', 'sincronizar'].includes(interaction.data.options?.[0]?.name);
+    const adminChange = isCommand && interaction.data.name === 'moderar' && ['cancelar', 'sincronizar', 'confirmar'].includes(interaction.data.options?.[0]?.name) || interaction.data?.custom_id?.startsWith('admin:');
     const message = adminChange ? 'No pude confirmar la acción. Consultá /moderar acciones antes de volver a intentarlo.' : configChange ? 'No pude confirmar la configuración. Consultá /config ver antes de volver a intentarlo.' : isCommand && interaction.data.name !== 'aura'
       ? 'No pude consultar los datos. Intentá de nuevo en unos segundos.'
       : 'No pude confirmar la operación. Consultá /perfil antes de volver a intentarlo.';
@@ -450,6 +462,13 @@ export default {
             return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
           }
         }
+        return deferInteraction(interaction, env, ctx);
+      }
+      if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('admin:')) {
+        if (!isAdministrator(interaction)) return ephemeral('Esta acción exige Administrador.');
+        const parts = interaction.data.custom_id.split(':');
+        if (parts.length !== 3 || !['confirm', 'discard'].includes(parts[1])) return ephemeral('Acción administrativa inválida.');
+        if (!(Number(interaction.message?.flags ?? 0) & 64)) return ephemeral('Confirmá desde la vista previa privada o usá /moderar confirmar.');
         return deferInteraction(interaction, env, ctx);
       }
       if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('aura:')) {

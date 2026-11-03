@@ -13,7 +13,8 @@ export const QUEUE_MESSAGE_SYNC_SQL = `INSERT INTO proposal_message_sync(proposa
 
 // One SQL statement provides a consistent snapshot of status, counts and revision.
 export async function readProposalMessage(db, id) {
-  const proposal = await db.prepare(`SELECT p.*, s.revision, s.synced_revision, s.retry_at, r.voter_role_id, r.votes_to_close, r.votes_to_override,
+  const proposal = await db.prepare(`SELECT p.*, EXISTS (SELECT 1 FROM admin_adjustments WHERE proposal_id = p.id) AS administrative,
+    (SELECT message_id FROM proposal_notifications WHERE proposal_id = p.id AND state = 'sent') AS notice_message_id, s.revision, s.synced_revision, s.retry_at, r.voter_role_id, r.votes_to_close, r.votes_to_override,
     (SELECT COUNT(*) FROM votes WHERE proposal_id = p.id AND choice = 'yes') AS yes,
     (SELECT COUNT(*) FROM votes WHERE proposal_id = p.id AND choice = 'no') AS no,
     (SELECT COUNT(*) FROM role_votes WHERE proposal_id = p.id AND choice = 'yes') AS roleYes,
@@ -35,7 +36,7 @@ export async function retryMessageSync(env) {
   await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
   const pending = await env.DB.prepare(`SELECT s.proposal_id FROM proposal_message_sync s
     JOIN proposals p ON p.id = s.proposal_id
-    WHERE s.revision > s.synced_revision AND s.retry_at <= unixepoch() AND p.message_id IS NOT NULL
+    WHERE s.revision > s.synced_revision AND s.retry_at <= unixepoch() AND (p.message_id IS NOT NULL OR (p.status = 'voided' AND EXISTS (SELECT 1 FROM proposal_notifications n WHERE n.proposal_id = p.id AND n.state = 'sent' AND n.message_id IS NOT NULL)))
     ORDER BY s.retry_at, s.proposal_id LIMIT 20`).all();
   for (const row of pending.results) {
     try { await requestMessageSync(env, row.proposal_id); }
@@ -76,25 +77,32 @@ export class ProposalMessageSync {
       if (!snapshot) return new Response('Proposal missing', { status: 404 });
       const { proposal, body } = snapshot;
       if (proposal.revision == null || proposal.revision <= proposal.synced_revision) return new Response('Current');
-      if (!proposal.message_id || proposal.retry_at > Math.floor(Date.now() / 1000)) return new Response('Pending', { status: 503 });
+      const targets = [];
+      if (proposal.message_id) targets.push({ id: proposal.message_id, body });
+      if (proposal.status === 'voided' && proposal.notice_message_id && proposal.notice_message_id !== proposal.message_id) {
+        targets.push({ id: proposal.notice_message_id, body: { content: '⛔ Propuesta anulada. Sus puntos no cuentan para el aura.', embeds: [], components: [], allowed_mentions: { parse: [] } } });
+      }
+      if (!targets.length || proposal.retry_at > Math.floor(Date.now() / 1000)) return new Response('Pending', { status: 503 });
       try {
-        const response = await discordRequest(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages/${proposal.message_id}`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bot ${this.env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-        if (response.status === 429) {
-          diagnostic('warn', 'DISCORD_MESSAGE_RATE_LIMITED', 'discord', 429);
-          const rateLimit = await discordJSON(response);
-          const seconds = Number(rateLimit.retry_after);
-          const delay = Number.isFinite(seconds) ? Math.max(1, Math.ceil(seconds)) : 60;
-          await this.db.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + ? WHERE proposal_id = ?').bind(delay, id).run();
-          return new Response('Rate limited', { status: 503 });
-        }
-        if (!response.ok && response.status !== 404) {
-          diagnostic('warn', 'DISCORD_MESSAGE_EDIT_FAILED', 'discord', response.status);
-          await this.defer(id);
-          return new Response('Discord error', { status: 503 });
+        for (const target of targets) {
+          const response = await discordRequest(`https://discord.com/api/v10/channels/${proposal.channel_id}/messages/${target.id}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bot ${this.env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' },
+            body: JSON.stringify(target.body)
+          });
+          if (response.status === 429) {
+            diagnostic('warn', 'DISCORD_MESSAGE_RATE_LIMITED', 'discord', 429);
+            const rateLimit = await discordJSON(response);
+            const seconds = Number(rateLimit.retry_after);
+            const delay = Number.isFinite(seconds) ? Math.max(1, Math.ceil(seconds)) : 60;
+            await this.db.prepare('UPDATE proposal_message_sync SET retry_at = unixepoch() + ? WHERE proposal_id = ?').bind(delay, id).run();
+            return new Response('Rate limited', { status: 503 });
+          }
+          if (!response.ok && response.status !== 404) {
+            diagnostic('warn', 'DISCORD_MESSAGE_EDIT_FAILED', 'discord', response.status);
+            await this.defer(id);
+            return new Response('Discord error', { status: 503 });
+          }
         }
         // A vote may have arrived while PATCH was in flight. Acknowledge only the
         // version actually rendered, then read again before the next edit.

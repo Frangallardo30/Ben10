@@ -7,7 +7,7 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-001](complete/B10-001.md) | Revisar la lógica y automatizar pruebas | Hecha | Alta |
 | [B10-002](B10-002.md) | Mantener el embed correcto ante votos simultáneos | En curso | Alta |
 | [B10-003](B10-003.md) | Responder a tiempo cuando D1 se ralentiza | En curso | Alta |
-| [B10-004](B10-004.md) | Permitir cancelar una propuesta abierta | Pendiente | Media |
+| [B10-004](B10-004.md) | Permitir cancelar una propuesta abierta | En curso | Media |
 | [B10-005](B10-005.md) | Guardar la fecha real de cada propuesta | Pendiente | Media |
 | [B10-006](B10-006.md) | Probar el Worker en su runtime y en Discord | Pendiente | Alta |
 | [B10-007](B10-007.md) | Mejorar diagnóstico y operación en Cloudflare | Pendiente | Media |

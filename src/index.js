@@ -4,7 +4,7 @@ import { QUEUE_MESSAGE_SYNC_SQL, requestMessageSync, retryMessageSync, readPropo
 export { ProposalMessageSync } from './message-sync.js';
 import { QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from './notifications.js';
 import { commands } from './commands.js';
-import { AURA_VOTER_ROLE_ID, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
+import { AURA_VOTER_ROLE_ID, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, CANCEL_PROPOSAL_SQL, canVote } from './voting.js';
 
 const DISCORD = 'https://discord.com/api/v10';
 const PROPOSAL_LIFETIME_SECONDS = 86400;
@@ -122,7 +122,7 @@ async function command(interaction, env, ctx) {
           { name: '🗳️ /aura', value: 'Propone sumar o restar puntos a alguien. Elegí `usuario`, `puntos` (de -1000 a 1000, sin 0) y `motivo`. Podés postularte a vos mismo.', inline: false },
           { name: '👤 /perfil', value: 'Muestra el aura total, las votaciones abiertas y los últimos cambios aprobados. `usuario` es opcional; sin él, muestra tu perfil.', inline: false },
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
-          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
+          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
         footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
       }]
@@ -230,9 +230,32 @@ async function vote(interaction, env, ctx) {
   return reply({ type: 6 });
 }
 
+async function cancelProposal(interaction, env, ctx) {
+  await prepareWrites(env.DB);
+  const id = interaction.data.custom_id.split(':')[2];
+  const user = actor(interaction);
+  const proposal = await env.DB.prepare('SELECT * FROM proposals WHERE id = ? AND guild_id = ?').bind(id, interaction.guild_id).first();
+  if (!proposal) return ephemeral('Propuesta inexistente.');
+  if (!user || proposal.proposer_id !== user) return ephemeral('Solo quien creó la propuesta puede cancelarla.');
+  const results = await env.DB.batch([
+    env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
+    env.DB.prepare(CANCEL_PROPOSAL_SQL).bind(id, interaction.guild_id, user),
+    env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL AND ? IS NOT NULL')
+      .bind(interaction.message?.id ?? null, id, interaction.message?.id ?? null),
+    env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id)
+  ]);
+  synchronizeInBackground(env, ctx, id);
+  if (results[1].meta.changes === 1) return reply({ type: 6 });
+  const updated = await env.DB.prepare('SELECT status FROM proposals WHERE id = ?').bind(id).first();
+  return ephemeral(updated.status === 'cancelled' ? 'La propuesta ya está cancelada.' : 'La votación ya cerró; no se puede cancelar.');
+}
+
 async function performInteraction(interaction, env, ctx) {
   const isCommand = interaction.type === 2;
-  const result = await (isCommand ? command(interaction, env, ctx) : vote(interaction, env, ctx));
+  let result;
+  if (isCommand) result = await command(interaction, env, ctx);
+  else if (interaction.data.custom_id.split(':')[1] === 'cancel') result = await cancelProposal(interaction, env, ctx);
+  else result = await vote(interaction, env, ctx);
   const payload = await result.json();
   if (!isCommand) {
     if (payload.type === 4) await deferredButtonError(interaction, env, payload.data.content);
@@ -318,7 +341,7 @@ export default {
         return deferInteraction(interaction, env, ctx);
       }
       if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('aura:')) {
-        if (!['yes', 'no'].includes(interaction.data.custom_id.split(':')[1])) return ephemeral('Voto inválido.');
+        if (!['yes', 'no', 'cancel'].includes(interaction.data.custom_id.split(':')[1])) return ephemeral('Voto inválido.');
         return deferInteraction(interaction, env, ctx);
       }
       return ephemeral('Interacción desconocida.');

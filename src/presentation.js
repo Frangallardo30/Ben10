@@ -4,7 +4,7 @@ const label = (amount) => `${amount > 0 ? '+' : ''}${amount}`;
 
 export function display(proposal, votes) {
   const closed = proposal.status !== 'open';
-  let result = proposal.status === 'approved' ? '✅ Aprobada' : proposal.status === 'expired' ? '⌛ Vencida sin cambiar el aura' : '❌ Rechazada';
+  let result = proposal.status === 'approved' ? '✅ Aprobada' : proposal.status === 'expired' ? '⌛ Vencida sin cambiar el aura' : proposal.status === 'cancelled' ? '⚪ Cancelada sin cambiar el aura' : '❌ Rechazada';
   if (proposal.status === 'approved' || proposal.status === 'rejected') {
     const approved = proposal.status === 'approved';
     const roleVotes = approved ? votes.roleYes : votes.roleNo;
@@ -31,7 +31,7 @@ export function display(proposal, votes) {
     embeds: [{
       title: `Propuesta de aura: ${label(proposal.amount)}`,
       description: `<@${proposal.target_id}>: ${proposal.reason}\n\n🗳️ Todos pueden votar. El rol <@&${AURA_VOTER_ROLE_ID}> puede cerrar la votación.`,
-      color: closed ? (proposal.status === 'approved' ? 0x21a675 : 0xc84a4a) : 0x5785f2,
+      color: closed ? (proposal.status === 'approved' ? 0x21a675 : proposal.status === 'cancelled' ? 0x747f8d : 0xc84a4a) : 0x5785f2,
       fields: [
         { name: 'Todos los votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true },
         { name: 'Votos del rol', value: `👍 ${votes.roleYes} · 👎 ${votes.roleNo}`, inline: true },
@@ -41,7 +41,8 @@ export function display(proposal, votes) {
     }],
     components: closed ? [] : [{ type: 1, components: [
       { type: 2, style: 3, label: 'Aprobar', emoji: { name: '👍' }, custom_id: `aura:yes:${proposal.id}` },
-      { type: 2, style: 4, label: 'Desaprobar', emoji: { name: '👎' }, custom_id: `aura:no:${proposal.id}` }
+      { type: 2, style: 4, label: 'Desaprobar', emoji: { name: '👎' }, custom_id: `aura:no:${proposal.id}` },
+      { type: 2, style: 2, label: 'Cancelar propuesta', custom_id: `aura:cancel:${proposal.id}` }
     ] }]
   };
 }

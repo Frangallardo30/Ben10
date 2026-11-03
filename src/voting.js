@@ -25,3 +25,5 @@ export const CLOSE_PROPOSAL_SQL = `UPDATE proposals SET status = (
 export function canVote(userId, proposal) {
   return Boolean(userId && userId !== proposal.target_id && userId !== proposal.proposer_id);
 }
+
+export const CANCEL_PROPOSAL_SQL = "UPDATE proposals SET status = 'cancelled' WHERE id = ? AND guild_id = ? AND proposer_id = ? AND status = 'open' AND expires_at > unixepoch()";

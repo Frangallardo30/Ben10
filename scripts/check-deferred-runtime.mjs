@@ -77,8 +77,16 @@ try {
   assert.equal((await db.prepare('SELECT choice FROM votes').first()).choice, 'no');
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM role_votes').first()).n, 0);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM vote_interactions').first()).n, 2);
+  const beforeCancel = messageEdits().length;
+  assert.deepEqual(await dispatch({ id: '100005', token: 'runtime-cancel', type: 3,
+    member: { user: { id: 'proposer' } }, data: { custom_id: 'aura:cancel:100001' }, message: { id: '999123' } }), { type: 6 });
+  await until(() => messageEdits().length > beforeCancel);
+  assert.equal((await db.prepare('SELECT status FROM proposals').first()).status, 'cancelled');
+  assert.match(messageEdits().at(-1).body.embeds[0].fields[2].value, /Cancelada/);
+  assert.deepEqual(messageEdits().at(-1).body.components, []);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').first()).n, 0);
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));
-  console.log('PASS: workerd defers commands/buttons, completes webhooks, deduplicates proposals/votes and reports D1 failure. Discord mocked; no remote requests.');
+  console.log('PASS: workerd defers commands/buttons, completes webhooks, deduplicates proposals/votes, cancels only an open proposal and reports D1 failure. Discord mocked; no remote requests.');
 } finally { await runtime.dispose(); }

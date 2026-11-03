@@ -29,6 +29,12 @@ async function prepare(db) {
   ]);
   await db.batch([
     db.prepare("INSERT OR IGNORE INTO role_votes(proposal_id, user_id, choice) SELECT v.proposal_id, v.user_id, v.choice FROM votes v JOIN proposals p ON p.id = v.proposal_id WHERE p.status = 'open' AND EXISTS (SELECT 1 FROM bot_settings WHERE key = 'voting_policy' AND value = 'role4-v1')"),
-    db.prepare("INSERT INTO bot_settings(key, value) VALUES ('voting_policy', 'all-votes-role4-v2') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    db.prepare("INSERT INTO bot_settings(key, value) VALUES ('voting_policy', 'all-votes-role4-v2') ON CONFLICT(key) DO UPDATE SET value = excluded.value"),
+    // Refresh existing open messages once so they also receive the cancel button.
+    db.prepare(`INSERT INTO proposal_message_sync(proposal_id)
+      SELECT id FROM proposals WHERE status = 'open' AND message_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM bot_settings WHERE key = 'cancel_button_v1')
+      ON CONFLICT(proposal_id) DO UPDATE SET revision = revision + 1`),
+    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('cancel_button_v1', 'ready')")
   ]);
 }

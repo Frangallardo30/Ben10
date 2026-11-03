@@ -10,6 +10,14 @@ La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol
 
 Si no se alcanza un resultado, vence a las 24 horas sin cambiar el aura. El cron revisa las propuestas cada cinco minutos y marca las vencidas; un voto después del plazo tampoco cuenta aunque el cron aún no haya corrido. El lote de voto comprueba el vencimiento con el reloj de D1 al ejecutarse, antes de guardar el voto y resolver el cierre; si ya venció, no puede aprobarse ni reabrirse. El bot intenta quitar los botones del mensaje original y vuelve a intentarlo si Discord falla. Las propuestas creadas antes de guardar el ID del mensaje pueden quedar con botones visibles si nadie interactuó con ellas; al pulsarlos, el bot muestra que la votación venció.
 
+## Cancelar una propuesta
+
+El botón «Cancelar propuesta» permite a quien la creó retirarla mientras siga abierta y no haya vencido. El rol de votación o ser la persona que recibe los puntos no otorgan ese permiso. Se comprueban el servidor y el creador tanto al leer la propuesta como al guardar la cancelación. No se puede cancelar una propuesta aprobada, rechazada o vencida.
+
+La cancelación cambia el estado a `cancelled`, conserva los votos y el motivo, no modifica el aura ni el historial de aprobaciones, y actualiza el mensaje a «Cancelada sin cambiar el aura» sin botones. No publica un aviso separado de aprobación o rechazo. Repetir la cancelación no vuelve a cambiar el estado. Si coincide con el voto decisivo, prevalece la primera transición de estado confirmada en D1; una cancelación no revierte una aprobación y un voto no reabre una propuesta cancelada. Si el plazo ya pasó, prevalece el vencimiento.
+
+La preparación solicita una sola vez actualizar los mensajes abiertos anteriores para agregar el botón, mediante la marca `cancel_button_v1` en `bot_settings`. El cron o la siguiente escritura activan esa preparación; la entrega depende del sincronizador y del acceso a Discord.
+
 ## Respuestas a interacciones
 
 Después de verificar la firma, `/aura`, `/perfil` y `/historial` reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` responde directamente porque no consulta la base. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.

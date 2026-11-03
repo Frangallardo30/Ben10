@@ -158,8 +158,11 @@ test('el cron caduca solo abiertas vencidas y reintenta quitar botones', async (
     DB.db.exec('UPDATE proposal_message_sync SET retry_at = 0');
     await worker.scheduled({}, env);
     await worker.scheduled({}, env);
-    assert.equal(patches.length, 2);
-    for (const body of patches) {
+    assert.equal(patches.length, 3); // Includes the one-time refresh of the still-open message.
+    const expiredPatches = patches.filter((body) => body.embeds[0].fields[2].value.includes('Vencida'));
+    assert.equal(expiredPatches.length, 2);
+    assert.ok(patches.some((body) => body.components[0]?.components.some((button) => button.label === 'Cancelar propuesta')));
+    for (const body of expiredPatches) {
       assert.deepEqual(body.components, []);
       assert.match(body.embeds[0].fields[2].value, /Vencida/);
     }
@@ -376,5 +379,146 @@ test('votos simultáneos del mismo usuario y cierre: ACKs sin ediciones y una so
     assert.match(edits.at(-1).embeds[0].fields[2].value, /Aprobada/);
     assert.equal(edits.at(-1).embeds[0].fields[0].value, '👍 4 · 👎 0');
     assert.deepEqual(edits.at(-1).components, []);
+  } finally { DB.close(); }
+});
+
+async function cancellableProposal(env) {
+  const result = await interaction(env, { ...base('creator'), type: 2, data: { name: 'aura', options: [
+    { name: 'usuario', value: 'target' }, { name: 'puntos', value: 100 }, { name: 'motivo', value: 'Propuesta retirada' }
+  ] } });
+  const button = result.data.components[0].components.find((item) => item.label === 'Cancelar propuesta');
+  assert.ok(button);
+  return { id: button.custom_id.split(':')[2], cancelId: button.custom_id, voteId: button.custom_id.replace(':cancel:', ':yes:') };
+}
+
+test('solo el creador puede cancelar y el permiso se limita al servidor de la propuesta', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const { id, cancelId } = await cancellableProposal(env);
+    for (const user of ['target', 'other']) {
+      const denied = await interaction(env, { ...base(user, true), type: 3, data: { custom_id: cancelId } });
+      assert.equal(denied.data.flags, 64);
+      assert.match(denied.data.content, /Solo quien creó/);
+    }
+    const foreign = await interaction(env, { ...base('creator'), guild_id: 'guild-2', type: 3, data: { custom_id: cancelId } });
+    assert.match(foreign.data.content, /inexistente/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'open');
+  } finally { DB.close(); }
+});
+
+test('cancelar actualiza el mensaje, conserva votos e historial y no publica aviso de aprobación', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const edits = [];
+  mockDiscord(t, async (_url, options) => {
+    assert.equal(options.method, 'PATCH');
+    edits.push(JSON.parse(options.body));
+    return Response.json({ id: '999123' });
+  });
+  try {
+    DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('approved-before', 'guild-1', 'channel-1', 'target', 'creator', 77, 'Aprobación previa', 1, 'approved');
+    const { id, cancelId, voteId } = await cancellableProposal(env);
+    await interaction(env, { ...base('voter', true), type: 3, data: { custom_id: voteId } });
+    env.DISCORD_BOT_TOKEN = 'test-only';
+    const cancelled = await interaction(env, { ...base('creator'), type: 3, message: { id: '999123' }, data: { custom_id: cancelId } });
+    assert.deepEqual(cancelled, { type: 6 });
+    assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada sin cambiar el aura/);
+    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).allowed_mentions, { parse: [] });
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE proposal_id = ?').get(id).n, 1);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications WHERE proposal_id = ?').get(id).n, 0);
+    const profile = await interaction(env, { ...base('target'), type: 2, data: { name: 'perfil' } });
+    assert.match(profile.data.embeds[0].description, /77 puntos/);
+    assert.equal(profile.data.embeds[0].fields[0].value, '1');
+    assert.equal(profile.data.embeds[0].fields[1].value, '0');
+    const history = await interaction(env, { ...base('target'), type: 2, data: { name: 'historial' } });
+    assert.match(history.data.embeds[0].description, /Aprobación previa/);
+    assert.doesNotMatch(history.data.embeds[0].description, /Propuesta retirada/);
+    const lateVote = await interaction(env, { ...base('late', true), type: 3, data: { custom_id: voteId } });
+    assert.match(lateVote.data.content, /ya cerró/);
+    assert.deepEqual(edits.at(-1).components, []);
+  } finally { DB.close(); }
+});
+
+test('cancelaciones simultáneas o repetidas producen un solo cambio de estado', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const { id, cancelId } = await cancellableProposal(env);
+    DB.db.exec("CREATE TABLE status_changes (status TEXT); CREATE TRIGGER record_status AFTER UPDATE OF status ON proposals WHEN old.status <> new.status BEGIN INSERT INTO status_changes VALUES (new.status); END;");
+    const cancel = () => interaction(env, { ...base('creator'), type: 3, data: { custom_id: cancelId } });
+    await Promise.all([cancel(), cancel()]);
+    const repeated = await cancel();
+    assert.match(repeated.data.content, /ya está cancelada/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'cancelled');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM status_changes').get().n, 1);
+  } finally { DB.close(); }
+});
+
+test('cancelar después del plazo conserva el vencimiento aunque aún no haya corrido el cron', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const { id, cancelId } = await cancellableProposal(env);
+    DB.db.prepare('UPDATE proposals SET expires_at = 0 WHERE id = ?').run(id);
+    const result = await interaction(env, { ...base('creator'), type: 3, data: { custom_id: cancelId } });
+    assert.match(result.data.content, /ya cerró/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'expired');
+  } finally { DB.close(); }
+});
+
+for (const winner of ['cancel', 'vote']) {
+  test(`carrera entre cancelación y voto decisivo: ${winner} confirma primero y conserva el estado final`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      const { id, cancelId, voteId } = await cancellableProposal(env);
+      for (let i = 0; i < 3; i++) await interaction(env, { ...base(`role-${i}`, true), type: 3, data: { custom_id: voteId } });
+      const cancel = { ...base('creator'), type: 3, data: { custom_id: cancelId } };
+      const vote = { ...base('deciding', true), type: 3, data: { custom_id: voteId } };
+      const prepare = DB.prepare.bind(DB);
+      let race = true;
+      DB.prepare = (sql) => {
+        const statement = prepare(sql);
+        if (sql === 'SELECT * FROM proposals WHERE id = ? AND guild_id = ?' && race) {
+          const first = statement.first.bind(statement);
+          statement.first = async () => {
+            const snapshot = await first();
+            race = false;
+            await interaction(env, winner === 'cancel' ? cancel : vote);
+            return snapshot;
+          };
+        }
+        return statement;
+      };
+      await interaction(env, winner === 'cancel' ? vote : cancel);
+      const snapshot = await readProposalMessage(DB, id);
+      assert.equal(snapshot.proposal.status, winner === 'cancel' ? 'cancelled' : 'approved');
+      assert.equal(snapshot.proposal.yes, winner === 'cancel' ? 3 : 4);
+      assert.deepEqual(snapshot.body.components, []);
+      assert.match(snapshot.body.embeds[0].fields[2].value, winner === 'cancel' ? /Cancelada/ : /Aprobada/);
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications WHERE proposal_id = ?').get(id).n, winner === 'cancel' ? 0 : 1);
+    } finally { DB.close(); }
+  });
+}
+
+test('la migración solicita actualizar una sola vez los mensajes abiertos anteriores', async () => {
+  const DB = new LocalD1();
+  const env = { DB };
+  env.MESSAGE_SYNC = messageSyncBinding(env);
+  try {
+    DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, message_id, target_id, proposer_id, amount, reason, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run('old-open', 'guild-1', 'channel-1', '999123', 'target', 'creator', 100, 'Anterior', Math.floor(Date.now() / 1000) + 3600);
+    DB.db.prepare('INSERT INTO proposal_message_sync(proposal_id, revision, synced_revision) VALUES (?, ?, ?)').run('old-open', 1, 1);
+    await worker.scheduled({}, env);
+    const first = DB.db.prepare('SELECT revision, synced_revision FROM proposal_message_sync').get();
+    assert.equal(first.revision, 2);
+    assert.equal(first.synced_revision, 1);
+    const otherBinding = { prepare: DB.prepare.bind(DB), batch: DB.batch.bind(DB) };
+    await worker.scheduled({}, { ...env, DB: otherBinding });
+    assert.equal(DB.db.prepare('SELECT revision FROM proposal_message_sync').get().revision, 2);
+    assert.ok(DB.db.prepare("SELECT value FROM bot_settings WHERE key = 'cancel_button_v1'").get());
   } finally { DB.close(); }
 });

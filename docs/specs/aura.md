@@ -10,6 +10,12 @@ La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol
 
 Si no se alcanza un resultado, vence a las 24 horas sin cambiar el aura. El cron revisa las propuestas cada cinco minutos y marca las vencidas; un voto después del plazo tampoco cuenta aunque el cron aún no haya corrido. El lote de voto comprueba el vencimiento con el reloj de D1 al ejecutarse, antes de guardar el voto y resolver el cierre; si ya venció, no puede aprobarse ni reabrirse. El bot intenta quitar los botones del mensaje original y vuelve a intentarlo si Discord falla. Las propuestas creadas antes de guardar el ID del mensaje pueden quedar con botones visibles si nadie interactuó con ellas; al pulsarlos, el bot muestra que la votación venció.
 
+## Sincronización del mensaje
+
+Los votos válidos se confirman sin editar el mensaje desde la respuesta de la interacción. El lote de D1 guarda también una revisión pendiente en `proposal_message_sync`. El Durable Object `ProposalMessageSync`, enlazado como `MESSAGE_SYNC` y separado por ID de propuesta, es el único que edita el mensaje de la votación. Procesa las ediciones en serie y consulta en una sola lectura de D1 el estado, ambos recuentos y la revisión. Si llegan votos durante una edición, vuelve a leer y publica la revisión nueva después de terminar la anterior. Así una respuesta antigua de un voto no puede restaurar los botones de una votación ya cerrada en el mensaje.
+
+El cron envía hasta veinte sincronizaciones pendientes por ejecución; el vencimiento también pasa por este mismo flujo. Los errores conservan la revisión pendiente y el 429 respeta el plazo de reintento de Discord. Si falta el token o el ID del mensaje, la edición espera hasta que estén disponibles. Un mensaje eliminado (404) se considera atendido para esa revisión. La tabla anterior `proposal_expiry_sync` se conserva por compatibilidad, pero ya no dirige las ediciones. Al recuperar el ID original se solicita una sincronización del estado actual. La corrección visual requiere `DISCORD_BOT_TOKEN`, permisos en el canal y el binding `MESSAGE_SYNC`; puede demorarse durante fallos de Discord y no recrea mensajes eliminados.
+
 ## Avisos de cierre
 
 Al aprobarse o rechazarse una propuesta, el bot publica un aviso en su mismo canal. Indica la persona afectada y los puntos con signo si se aprueba; si se rechaza, aclara que su aura no cambia. Las menciones no generan notificaciones. Las propuestas vencidas solo actualizan el mensaje original. El bot necesita el permiso Send Messages además de View Channels.

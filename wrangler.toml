@@ -13,3 +13,11 @@ crons = ["*/5 * * * *"]
 binding = "DB"
 database_name = "ben10bot"
 database_id = "f20057f9-2d80-4cb0-94dd-f2a2317036d3"
+
+[[durable_objects.bindings]]
+name = "MESSAGE_SYNC"
+class_name = "ProposalMessageSync"
+
+[[migrations]]
+tag = "v1-message-sync"
+new_sqlite_classes = ["ProposalMessageSync"]

@@ -1,6 +1,6 @@
 # Ben10Bot
 
-Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Workers para recibir comandos y botones, y Cloudflare D1 para guardar las propuestas y los votos. No necesita un proceso encendido todo el día ni una clave de YouTube.
+Bot de aura para Discord, pensado para el servidor de amigos. Usa Cloudflare Workers para recibir comandos y botones, Cloudflare D1 para guardar las propuestas y los votos, y un Durable Object por propuesta para sincronizar las ediciones del mensaje. No necesita un proceso encendido todo el día ni una clave de YouTube.
 
 Las pruebas y los límites conocidos están en [Revisión de funcionamiento](QUALITY.md). Para ejecutarlas necesitás Node.js 24 o posterior: `npm ci && npm test`.
 
@@ -23,7 +23,7 @@ Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 1
 
 1. En Cloudflare **D1 SQL Database → ben10bot → Console**, copiá las tres instrucciones `CREATE TABLE` y la instrucción `CREATE INDEX` de [`schema.sql`](schema.sql). Ejecutalas una por una. Si indica que la tabla ya existe, podés continuar.
 2. En **Workers y Pages → Crear aplicación**, elegí crear un **Worker** desde un repositorio de GitHub y seleccioná `Frangallardo30/Ben10`. Si pide un comando de despliegue, usá `npx wrangler deploy`; el directorio raíz es `/`.
-3. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
+3. El binding `MESSAGE_SYNC` y la migración del Durable Object están declarados en `wrangler.toml` y se crean al desplegar con Wrangler. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
 4. En **Discord Developer Portal → Ben 10 → General Information**, guardá `https://ben10.<tu-subdominio>.workers.dev/interactions` como **Interactions Endpoint URL**. Usá la URL exacta que Cloudflare muestre para tu Worker.
 5. El Worker registra `/aura`, `/perfil`, `/historial` y `/info` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
 

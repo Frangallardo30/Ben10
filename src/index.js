@@ -1,6 +1,9 @@
+import { display } from './presentation.js';
+import { MESSAGE_SYNC_SCHEMA_SQL, QUEUE_MESSAGE_SYNC_SQL, requestMessageSync, retryMessageSync } from './message-sync.js';
+export { ProposalMessageSync } from './message-sync.js';
 import { NOTIFICATION_SCHEMA_SQL, QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from './notifications.js';
 import { commands } from './commands.js';
-import { AURA_VOTER_ROLE_ID, VOTES_TO_CLOSE, VOTES_TO_OVERRIDE, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
+import { AURA_VOTER_ROLE_ID, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
 
 const DISCORD = 'https://discord.com/api/v10';
 const PROPOSAL_LIFETIME_SECONDS = 86400;
@@ -51,59 +54,6 @@ function profileIdentity(interaction, userId) {
   return { name, avatar };
 }
 
-async function counts(db, id) {
-  const rows = await db.prepare('SELECT choice, COUNT(*) AS n FROM votes WHERE proposal_id = ? GROUP BY choice').bind(id).all();
-  const roleRows = await db.prepare('SELECT choice, COUNT(*) AS n FROM role_votes WHERE proposal_id = ? GROUP BY choice').bind(id).all();
-  const values = { yes: 0, no: 0, roleYes: 0, roleNo: 0 };
-  for (const row of rows.results) values[row.choice] = row.n;
-  for (const row of roleRows.results) values[row.choice === 'yes' ? 'roleYes' : 'roleNo'] = row.n;
-  return values;
-}
-
-function display(proposal, votes) {
-  const closed = proposal.status !== 'open';
-  let result = proposal.status === 'approved' ? '✅ Aprobada' : proposal.status === 'expired' ? '⌛ Vencida sin cambiar el aura' : '❌ Rechazada';
-  if (proposal.status === 'approved' || proposal.status === 'rejected') {
-    const approved = proposal.status === 'approved';
-    const roleVotes = approved ? votes.roleYes : votes.roleNo;
-    const total = approved ? votes.yes : votes.no;
-    const opposingTotal = approved ? votes.no : votes.yes;
-    const direction = approved ? 'a favor' : 'en contra';
-    if (roleVotes >= VOTES_TO_OVERRIDE) {
-      result += `\nRegla de ${VOTES_TO_OVERRIDE} votos del rol ${direction}: decide incluso si va perdiendo en el total general.`;
-    } else if (roleVotes >= VOTES_TO_CLOSE && total >= opposingTotal) {
-      result += `\nRegla de ${VOTES_TO_CLOSE} votos del rol ${direction}: ${total === opposingTotal ? 'empata' : 'lidera'} en el total general.`;
-    }
-  }
-  if (!closed) {
-    if (votes.roleYes >= VOTES_TO_CLOSE && votes.yes < votes.no) {
-      result = `👍 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleYes} voto(s) más del rol`;
-    } else if (votes.roleNo >= VOTES_TO_CLOSE && votes.no < votes.yes) {
-      result = `👎 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleNo} voto(s) más del rol`;
-    } else {
-      result = 'Abierta: 4 del rol si empata o lidera; 6 si va perdiendo';
-    }
-  }
-  return {
-    allowed_mentions: { parse: [] },
-    embeds: [{
-      title: `Propuesta de aura: ${label(proposal.amount)}`,
-      description: `<@${proposal.target_id}>: ${proposal.reason}\n\n🗳️ Todos pueden votar. El rol <@&${AURA_VOTER_ROLE_ID}> puede cerrar la votación.`,
-      color: closed ? (proposal.status === 'approved' ? 0x21a675 : 0xc84a4a) : 0x5785f2,
-      fields: [
-        { name: 'Todos los votos', value: `👍 ${votes.yes} · 👎 ${votes.no}`, inline: true },
-        { name: 'Votos del rol', value: `👍 ${votes.roleYes} · 👎 ${votes.roleNo}`, inline: true },
-        { name: 'Estado', value: closed ? result : `${result}\nVence <t:${proposal.expires_at}:R>.`, inline: false }
-      ],
-      footer: { text: 'Una persona, un voto. Quien propone y quien recibe no votan.' }
-    }],
-    components: closed ? [] : [{ type: 1, components: [
-      { type: 2, style: 3, label: 'Aprobar', emoji: { name: '👍' }, custom_id: `aura:yes:${proposal.id}` },
-      { type: 2, style: 4, label: 'Desaprobar', emoji: { name: '👎' }, custom_id: `aura:no:${proposal.id}` }
-    ] }]
-  };
-}
-
 async function discord(env, path, method, body) {
   return fetch(`${DISCORD}${path}`, { method, headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
 }
@@ -117,6 +67,11 @@ async function rememberOriginalMessage(env, token, proposalId) {
       const message = await response.json();
       if (!/^\d+$/.test(message.id ?? '')) return;
       await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(message.id, proposalId).run();
+      await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
+      await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(proposalId).run();
+      await requestMessageSync(env, proposalId).catch((error) => {
+        console.warn('Original message saved; synchronization pending', proposalId, error?.name);
+      });
       return;
     } catch { /* Discord may not have created the original message yet. */ }
   }
@@ -125,24 +80,22 @@ async function rememberOriginalMessage(env, token, proposalId) {
 
 async function expireProposals(env) {
   const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS proposal_expiry_sync (proposal_id TEXT PRIMARY KEY, synced INTEGER NOT NULL DEFAULT 0)').run();
-  await env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE status = 'open' AND expires_at <= ?").bind(now).run();
-  await env.DB.prepare("INSERT OR IGNORE INTO proposal_expiry_sync(proposal_id) SELECT id FROM proposals WHERE status = 'expired' AND message_id IS NOT NULL").run();
-  const pending = await env.DB.prepare("SELECT p.* FROM proposals p JOIN proposal_expiry_sync s ON s.proposal_id = p.id WHERE p.status = 'expired' AND p.message_id IS NOT NULL AND s.synced = 0 ORDER BY p.expires_at LIMIT 20").all();
-  for (const proposal of pending.results) {
-    if (!env.DISCORD_BOT_TOKEN) break;
-    try {
-      const response = await discord(env, `/channels/${proposal.channel_id}/messages/${proposal.message_id}`, 'PATCH', display(proposal, await counts(env.DB, proposal.id)));
-      if (response.ok || response.status === 404) {
-        await env.DB.prepare('UPDATE proposal_expiry_sync SET synced = 1 WHERE proposal_id = ?').bind(proposal.id).run();
-      } else {
-        console.warn('Could not update expired aura message', proposal.id, response.status);
-        if (response.status === 429) break;
-      }
-    } catch (error) {
-      console.warn('Could not update expired aura message', proposal.id, error?.name);
-    }
-  }
+  await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO proposal_message_sync(proposal_id)
+      SELECT id FROM proposals WHERE status = 'open' AND expires_at <= ?
+      ON CONFLICT(proposal_id) DO UPDATE SET revision = revision + 1`).bind(now),
+    env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE status = 'open' AND expires_at <= ?").bind(now),
+    // Include expired messages from deployments before message synchronization existed.
+    env.DB.prepare(`INSERT OR IGNORE INTO proposal_message_sync(proposal_id)
+      SELECT id FROM proposals WHERE status = 'expired' AND message_id IS NOT NULL`)
+  ]);
+}
+
+function synchronizeInBackground(env, ctx, id) {
+  ctx.waitUntil(requestMessageSync(env, id).catch((error) => {
+    console.warn('Message synchronization pending', id, error?.name);
+  }));
 }
 
 async function ensureCommandsRegistered(env) {
@@ -285,11 +238,21 @@ async function vote(interaction, env, ctx) {
     await env.DB.prepare('UPDATE proposals SET message_id = ? WHERE id = ? AND message_id IS NULL').bind(interaction.message.id, id).run();
   }
   if (proposal.status === 'expired' || (proposal.status === 'open' && proposal.expires_at <= Math.floor(Date.now() / 1000))) {
-    await env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id).run();
-    const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
-    return updated.status === 'expired' ? reply({ type: 7, data: display(updated, await counts(env.DB, id)) }) : ephemeral('La votación ya cerró.');
+    await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
+      env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id)
+    ]);
+    synchronizeInBackground(env, ctx, id);
+    return reply({ type: 6 });
   }
-  if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
+  if (proposal.status !== 'open') {
+    // A stale button can still be visible after an earlier failed edit.
+    await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
+    await env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id).run();
+    synchronizeInBackground(env, ctx, id);
+    return ephemeral('La votación ya cerró.');
+  }
   const user = actor(interaction);
   if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
   const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
@@ -297,16 +260,18 @@ async function vote(interaction, env, ctx) {
     ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id)
     : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user);
   await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
+  await env.DB.prepare(MESSAGE_SYNC_SCHEMA_SQL).run();
   await env.DB.batch([
     env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
     env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id),
     roleVote,
     env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id),
-    env.DB.prepare(QUEUE_NOTIFICATION_SQL).bind(id)
+    env.DB.prepare(QUEUE_NOTIFICATION_SQL).bind(id),
+    env.DB.prepare(QUEUE_MESSAGE_SYNC_SQL).bind(id)
   ]);
-  const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
+  synchronizeInBackground(env, ctx, id);
   ctx.waitUntil(sendClosureNotifications(env, id).catch((error) => console.warn('Closure notice failed', error?.name)));
-  return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });
+  return reply({ type: 6 });
 }
 
 export default {
@@ -346,6 +311,7 @@ export default {
   async scheduled(_event, env) {
     try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
     try { await expireProposals(env); } catch (error) { console.error('Aura expiry failed', error); }
+    try { await retryMessageSync(env); } catch (error) { console.warn('Message sync retry failed', error?.name); }
     try {
       await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
       await sendClosureNotifications(env);

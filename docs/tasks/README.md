@@ -5,7 +5,7 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | ID | Tarea | Estado | Prioridad |
 | --- | --- | --- | --- |
 | [B10-001](complete/B10-001.md) | Revisar la lógica y automatizar pruebas | Hecha | Alta |
-| [B10-002](B10-002.md) | Mantener el embed correcto ante votos simultáneos | Pendiente | Alta |
+| [B10-002](B10-002.md) | Mantener el embed correcto ante votos simultáneos | En curso | Alta |
 | [B10-003](B10-003.md) | Responder a tiempo cuando D1 se ralentiza | Pendiente | Alta |
 | [B10-004](B10-004.md) | Permitir cancelar una propuesta abierta | Pendiente | Media |
 | [B10-005](B10-005.md) | Guardar la fecha real de cada propuesta | Pendiente | Media |

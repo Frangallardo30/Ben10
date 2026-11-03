@@ -37,3 +37,9 @@ CREATE TABLE IF NOT EXISTS proposal_notifications (
   retry_at INTEGER NOT NULL DEFAULT 0,
   message_id TEXT
 );
+CREATE TABLE IF NOT EXISTS proposal_message_sync (
+  proposal_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL DEFAULT 1,
+  synced_revision INTEGER NOT NULL DEFAULT 0,
+  retry_at INTEGER NOT NULL DEFAULT 0
+);

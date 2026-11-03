@@ -9,9 +9,12 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - Votos de miembros con y sin el rol; un voto por persona y cambio de voto.
 - Cierre con cuatro votos del rol cuando esa opción empata o lidera, y con seis cuando va perdiendo, en ambos sentidos.
 - Bloqueo de nuevos votos después del cierre y separación por servidor.
+- Ediciones serializadas por propuesta, revisión nueva durante un PATCH demorado, recuperación tras errores y reinicio, límites 429 y votos concurrentes de una misma persona.
 - Flujo completo de interacción firmada, creación de propuesta, migración inicial de D1, votos, `/perfil`, `/historial` y `/info`.
 
 `npx wrangler deploy --dry-run` comprueba que el Worker se empaqueta con sus bindings. El flujo de GitHub Actions `Check Ben10Bot` ejecuta estas comprobaciones en cada push y pull request.
+
+`node scripts/check-message-sync-runtime.mjs` ejecuta una prueba adicional con workerd, D1 y el Durable Object locales usando las dependencias fijadas de Wrangler. Retiene una edición abierta mientras llega el cierre y verifica que solo haya una edición en vuelo y que la última retire los botones. Discord está simulado y no se hacen solicitudes remotas.
 
 ## Prueba manual en Discord
 
@@ -21,6 +24,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 4. Hacé votar a una persona sin el rol: debe aparecer en el total, sin sumarse al recuento del rol.
 5. Probá cuatro votos del rol del lado que empata o lidera y, en otra propuesta, seis del lado que va perdiendo.
 6. Comprobá que los botones desaparezcan al cerrar y que `/perfil` e `/historial` reflejen solo las propuestas aprobadas.
+7. Con dos miembros votando casi al mismo tiempo, comprobá que el mensaje termine con los recuentos guardados y que ningún voto tardío restaure los botones. Verificá que el Worker tenga el binding `MESSAGE_SYNC` y el secreto `DISCORD_BOT_TOKEN`.
 
 ## Límites conocidos
 
@@ -28,4 +32,4 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - El voto especial refleja si la persona tenía el rol cuando emitió o cambió ese voto. Si pierde el rol después, conserva esa condición hasta que vuelva a votar.
 - Las pruebas locales usan SQLite y respuestas firmadas simuladas. No sustituyen la prueba manual de permisos, latencia y aspecto de los embeds en Discord y Cloudflare.
 - Discord exige responder a las interacciones en pocos segundos. Si D1 o Discord se ralentizan o fallan, puede aparecer «La aplicación no respondió». Revisá los registros de Cloudflare en ese caso.
-- Votos enviados casi simultáneamente pueden dejar el embed con un recuento visual desactualizado aunque D1 guarde el resultado correcto. En ese caso, `/perfil` y `/historial` muestran el resultado guardado; después del cierre, la propuesta ya no acepta votos. El embed no se corrige automáticamente.
+- Los votos no editan el embed desde sus respuestas. Las ediciones se serializan por propuesta mediante un Durable Object y las revisiones pendientes se reintentan por cron. Mientras falte el token, el ID original o el acceso a Discord, el mensaje puede quedar desactualizado; D1 mantiene los votos y el resultado. Un 404 no recrea un mensaje eliminado.

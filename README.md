@@ -17,7 +17,7 @@ El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md).
 
 ## Preparación
 
-Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 10** (`1417570023370653836`). Cloudflare puede cambiar límites y requisitos de su plan gratuito; revisalos al crear la cuenta. El bot requiere **Guild Install** con `applications.commands` y permiso **View Channels** para editar el mensaje al cerrar la votación.
+Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 10** (`1417570023370653836`). Cloudflare puede cambiar límites y requisitos de su plan gratuito; revisalos al crear la cuenta. El bot requiere **Guild Install** con `applications.commands` y permisos **View Channels** y **Send Messages** para actualizar la votación y publicar el aviso de cierre.
 
 ### Desde el navegador, sin instalar nada
 
@@ -38,7 +38,7 @@ El endpoint no necesita que mantengas una computadora encendida. Los secretos se
 5. Ejecutá `npm run deploy`. Copiá la URL `https://ben10.<tu-subdominio>.workers.dev/interactions`.
 6. En **Discord Developer Portal → Ben 10 → General Information**, pegá esa URL en **Interactions Endpoint URL** y guardá. Discord verificará la firma y la respuesta del endpoint.
 7. Registrá los comandos desde tu terminal con el token en una variable privada: `DISCORD_BOT_TOKEN=... npm run register`. No guardes ese comando con el valor real en archivos ni en el historial del shell.
-8. Invitá el bot al servidor con [esta URL](https://discord.com/oauth2/authorize?client_id=1417570023370653836&scope=bot%20applications.commands&permissions=1024).
+8. Invitá el bot al servidor con [esta URL](https://discord.com/oauth2/authorize?client_id=1417570023370653836&scope=bot%20applications.commands&permissions=3072).
 
 Para probar, usá `/aura` en un canal de texto y votá con miembros del rol y sin él. `/perfil` se actualiza cuando cuatro miembros del rol votan positivo. El Worker responde solo a solicitudes firmadas por Discord.
 Los votos de propuestas abiertas bajo la regla anterior se conservan; sus votos del rol se trasladan al recuento especial.

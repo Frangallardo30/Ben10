@@ -31,3 +31,9 @@ CREATE TABLE IF NOT EXISTS proposal_expiry_sync (
   proposal_id TEXT PRIMARY KEY,
   synced INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS proposal_notifications (
+  proposal_id TEXT PRIMARY KEY,
+  state TEXT NOT NULL DEFAULT 'pending',
+  retry_at INTEGER NOT NULL DEFAULT 0,
+  message_id TEXT
+);

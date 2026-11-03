@@ -1,3 +1,4 @@
+import { NOTIFICATION_SCHEMA_SQL, QUEUE_NOTIFICATION_SQL, sendClosureNotifications } from './notifications.js';
 import { commands } from './commands.js';
 import { AURA_VOTER_ROLE_ID, VOTES_TO_CLOSE, VOTES_TO_OVERRIDE, UPSERT_VOTE_SQL, UPSERT_ROLE_VOTE_SQL, REMOVE_ROLE_VOTE_SQL, CLOSE_PROPOSAL_SQL, canVote } from './voting.js';
 
@@ -62,6 +63,18 @@ async function counts(db, id) {
 function display(proposal, votes) {
   const closed = proposal.status !== 'open';
   let result = proposal.status === 'approved' ? '✅ Aprobada' : proposal.status === 'expired' ? '⌛ Vencida sin cambiar el aura' : '❌ Rechazada';
+  if (proposal.status === 'approved' || proposal.status === 'rejected') {
+    const approved = proposal.status === 'approved';
+    const roleVotes = approved ? votes.roleYes : votes.roleNo;
+    const total = approved ? votes.yes : votes.no;
+    const opposingTotal = approved ? votes.no : votes.yes;
+    const direction = approved ? 'a favor' : 'en contra';
+    if (roleVotes >= VOTES_TO_OVERRIDE) {
+      result += `\nRegla de ${VOTES_TO_OVERRIDE} votos del rol ${direction}: decide incluso si va perdiendo en el total general.`;
+    } else if (roleVotes >= VOTES_TO_CLOSE && total >= opposingTotal) {
+      result += `\nRegla de ${VOTES_TO_CLOSE} votos del rol ${direction}: ${total === opposingTotal ? 'empata' : 'lidera'} en el total general.`;
+    }
+  }
   if (!closed) {
     if (votes.roleYes >= VOTES_TO_CLOSE && votes.yes < votes.no) {
       result = `👍 del rol va perdiendo: necesita ${VOTES_TO_OVERRIDE - votes.roleYes} voto(s) más del rol`;
@@ -262,7 +275,7 @@ async function command(interaction, env, ctx) {
   return reply({ type: 4, data: display(proposal, { yes: 0, no: 0, roleYes: 0, roleNo: 0 }) });
 }
 
-async function vote(interaction, env) {
+async function vote(interaction, env, ctx) {
   await ensureVotingPolicy(env.DB);
   const [, choice, id] = interaction.data.custom_id.split(':');
   if (!['yes', 'no'].includes(choice)) return ephemeral('Voto inválido.');
@@ -279,18 +292,20 @@ async function vote(interaction, env) {
   if (proposal.status !== 'open') return ephemeral('La votación ya cerró.');
   const user = actor(interaction);
   if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
-  const now = Math.floor(Date.now() / 1000);
   const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
   const roleVote = hasRole
     ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id)
     : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user);
+  await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
   await env.DB.batch([
-    env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= ?").bind(id, now),
+    env.DB.prepare("UPDATE proposals SET status = 'expired' WHERE id = ? AND status = 'open' AND expires_at <= unixepoch()").bind(id),
     env.DB.prepare(UPSERT_VOTE_SQL).bind(id, user, choice, id),
     roleVote,
-    env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id)
+    env.DB.prepare(CLOSE_PROPOSAL_SQL).bind(id, id, id, id, id),
+    env.DB.prepare(QUEUE_NOTIFICATION_SQL).bind(id)
   ]);
   const updated = await env.DB.prepare('SELECT * FROM proposals WHERE id = ?').bind(id).first();
+  ctx.waitUntil(sendClosureNotifications(env, id).catch((error) => console.warn('Closure notice failed', error?.name)));
   return reply({ type: 7, data: display(updated, await counts(env.DB, id)) });
 }
 
@@ -321,7 +336,7 @@ export default {
         checkCommandsInBackground(env, ctx);
         return await command(interaction, env, ctx);
       }
-      if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env);
+      if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env, ctx);
       return ephemeral('Interacción desconocida.');
     } catch (error) {
       console.error('Interaction failed', error);
@@ -331,5 +346,9 @@ export default {
   async scheduled(_event, env) {
     try { await ensureCommandsRegistered(env); } catch (error) { console.error(error); }
     try { await expireProposals(env); } catch (error) { console.error('Aura expiry failed', error); }
+    try {
+      await env.DB.prepare(NOTIFICATION_SCHEMA_SQL).run();
+      await sendClosureNotifications(env);
+    } catch (error) { console.warn('Closure notice retry failed', error?.name); }
   }
 };

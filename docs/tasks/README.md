@@ -13,8 +13,8 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-007](B10-007.md) | Mejorar diagnóstico y operación en Cloudflare | Pendiente | Media |
 | [B10-008](B10-008.md) | Adaptar las pautas de FrangaFlix a Codex | Hecha | Media |
 | [B10-009](B10-009.md) | Caducar votaciones abiertas | En curso | Alta |
-| [B10-010](B10-010.md) | Mostrar por qué se cerró una votación | Pendiente | Media |
-| [B10-011](B10-011.md) | Avisar al cerrar una votación | Pendiente | Media |
+| [B10-010](B10-010.md) | Mostrar por qué se cerró una votación | En curso | Media |
+| [B10-011](B10-011.md) | Avisar al cerrar una votación | En curso | Media |
 | [B10-012](B10-012.md) | Añadir ranking de aura | Pendiente | Media |
 | [B10-013](B10-013.md) | Añadir estadísticas personales | Pendiente | Media |
 | [B10-014](B10-014.md) | Consultar historial de votaciones | Pendiente | Media |

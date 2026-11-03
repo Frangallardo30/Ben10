@@ -153,6 +153,17 @@ async function ensureCommandsRegistered(env) {
   console.log('Discord commands registered');
 }
 
+let nextCommandCheckAt = 0;
+
+function checkCommandsInBackground(env, ctx) {
+  if (Date.now() < nextCommandCheckAt) return;
+  nextCommandCheckAt = Date.now() + 300000;
+  ctx.waitUntil(ensureCommandsRegistered(env).catch((error) => {
+    nextCommandCheckAt = 0;
+    console.error('Discord command sync failed', error);
+  }));
+}
+
 let votingPolicyReady;
 
 async function ensureVotingPolicy(db) {
@@ -303,10 +314,13 @@ export default {
     if (!interaction) return new Response('Invalid signature', { status: 401 });
     try {
       if (interaction.type === 1) {
-        ctx.waitUntil(ensureCommandsRegistered(env).catch((error) => console.error(error)));
+        checkCommandsInBackground(env, ctx);
         return reply({ type: 1 });
       }
-      if (interaction.type === 2) return await command(interaction, env, ctx);
+      if (interaction.type === 2) {
+        checkCommandsInBackground(env, ctx);
+        return await command(interaction, env, ctx);
+      }
       if (interaction.type === 3 && interaction.data.custom_id?.startsWith('aura:')) return await vote(interaction, env);
       return ephemeral('Interacción desconocida.');
     } catch (error) {

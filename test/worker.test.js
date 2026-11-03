@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import test from 'node:test';
 import worker from '../src/index.js';
+import { commands } from '../src/commands.js';
 import { LocalD1, messageSyncBinding } from '../test-support/local-d1.js';
 import { completionFor, installInteractionWebhooks, mockDiscord } from '../test-support/discord.js';
 installInteractionWebhooks();
@@ -36,7 +37,7 @@ async function interaction(env, data) {
     // Aura's final interactive view is rendered from D1 by the synchronizer.
     const body = data.data.name === 'aura' && completion.embeds?.length
       ? (await readProposalMessage(env.DB, data.id)).body : completion;
-    return { type: 4, data: body };
+    return { type: 4, data: { ...body, ...(initial.data?.flags ? { flags: initial.data.flags } : {}) } };
   }
   if (initial.type === 6 && completion) return { type: 4, data: completion };
   return initial;
@@ -848,5 +849,408 @@ test('las propuestas duplicadas heredadas se conservan y no permiten una tercera
     assert.match(result.data.content, /Ya hay una votación abierta/);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 2);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 1);
+  } finally { DB.close(); }
+});
+
+function configInput(id, values = {}, interaction = {}) {
+  const role = values.rol;
+  return { ...base('admin'), id, type: 2, member: { user: { id: 'admin' }, roles: [], permissions: '32' },
+    data: { name: 'config', options: [{ type: 1, name: 'cambiar', options: Object.entries(values).map(([name, value]) => ({ name, value })) }],
+      resolved: { roles: role ? { [role]: { id: role, name: 'Decisor' } } : {} } }, ...interaction };
+}
+
+test('configuración exige permisos, separa servidores y requiere rol explícito en servidores nuevos', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const missing = await interaction(env, duplicateInput('unconfigured', { interaction: { guild_id: 'brand-new' } }));
+    assert.match(missing.data.content, /necesita un rol decisor/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 0);
+    const denied = await interaction(env, configInput('unauthorized', { normal: 1 }, { member: { user: { id: 'ordinary' }, permissions: '0' } }));
+    assert.equal(denied.data.flags, 64);
+    assert.match(denied.data.content, /Administrar servidor/);
+    const saved = await interaction(env, configInput('first-config', { rol: 'custom-role', normal: 2, imponerse: 3 }, { guild_id: 'brand-new' }));
+    assert.equal(saved.data.flags, 64);
+    assert.match(saved.data.content, /Configuración guardada/);
+    assert.equal(DB.db.prepare("SELECT voter_role_id FROM guild_config WHERE guild_id = 'brand-new'").get().voter_role_id, 'custom-role');
+    assert.equal(DB.db.prepare("SELECT votes_to_close FROM guild_config WHERE guild_id = 'guild-1'").get().votes_to_close, 4);
+    const info = await interaction(env, { ...base('reader'), guild_id: 'brand-new', type: 2, data: { name: 'info' } });
+    assert.match(info.data.embeds[0].fields.at(-1).value, /custom-role[\s\S]*2[\s\S]*3/);
+    const view = await interaction(env, { ...base('reader'), guild_id: 'brand-new', type: 2, data: { name: 'config', options: [{ name: 'ver' }] } });
+    assert.equal(view.data.flags, 64);
+    assert.match(view.data.content, /custom-role/);
+    const dm = await interaction(env, { user: { id: 'reader' }, type: 2, data: { name: 'config', options: [{ name: 'ver' }] } });
+    assert.match(dm.data.content, /dentro de un servidor/);
+  } finally { DB.close(); }
+});
+
+test('las propuestas conservan rol y umbrales al cambiar la configuración', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const voteAs = (id, role, user) => interaction(env, { ...base(user), member: { user: { id: user }, roles: [role] }, type: 3, data: { custom_id: `aura:yes:${id}` } });
+  try {
+    await interaction(env, configInput('config-old', { rol: 'old-role', normal: 2, imponerse: 3 }));
+    await interaction(env, duplicateInput('old-rules'));
+    await interaction(env, configInput('config-new', { rol: 'new-role', normal: 3, imponerse: 4 }));
+    await interaction(env, duplicateInput('new-rules', { reason: 'Otro motivo' }));
+    await voteAs('old-rules', 'old-role', 'old-voter-1');
+    await voteAs('old-rules', 'old-role', 'old-voter-2');
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'old-rules'").get().status, 'approved');
+    await voteAs('new-rules', 'old-role', 'ordinary');
+    for (let i = 0; i < 2; i++) await voteAs('new-rules', 'new-role', `new-${i}`);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'new-rules'").get().status, 'open');
+    await voteAs('new-rules', 'new-role', 'new-2');
+    const old = await readProposalMessage(DB, 'old-rules');
+    const fresh = await readProposalMessage(DB, 'new-rules');
+    assert.equal(fresh.proposal.status, 'approved');
+    assert.match(old.body.embeds[0].description, /old-role/);
+    assert.match(old.body.embeds[0].fields[2].value, /Regla de 2/);
+    assert.match(fresh.body.embeds[0].description, /new-role/);
+    assert.match(fresh.body.embeds[0].fields[2].value, /Regla de 3/);
+    assert.equal(fresh.proposal.roleYes, 3);
+  } finally { DB.close(); }
+});
+
+test('umbrales inválidos se rechazan y reentregar una configuración no revierte otra posterior', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (const values of [{ normal: 0 }, { normal: 1.5 }, { imponerse: 101 }, { normal: 7, imponerse: 6 }]) {
+      const rejected = await interaction(env, configInput(`invalid-${Object.keys(values)[0]}-${Object.values(values).join('-')}`, values));
+      assert.match(rejected.data.content, /umbrales/);
+    }
+    const initial = configInput('replayed-config', { normal: 2, imponerse: 3 });
+    await interaction(env, initial);
+    await interaction(env, configInput('later-config', { normal: 5, imponerse: 7 }));
+    const replay = await interaction(env, initial);
+    assert.match(replay.data.content, /ya fue procesada/);
+    assert.equal(DB.db.prepare("SELECT votes_to_close FROM guild_config WHERE guild_id = 'guild-1'").get().votes_to_close, 5);
+    const before = DB.db.prepare("SELECT version FROM guild_config WHERE guild_id = 'guild-1'").get().version;
+    const prepare = DB.prepare.bind(DB);
+    let readers = 0;
+    let releaseReaders;
+    const bothRead = new Promise((resolve) => { releaseReaders = resolve; });
+    DB.prepare = (sql) => {
+      const statement = prepare(sql);
+      if (sql === 'SELECT * FROM guild_config WHERE guild_id = ?') {
+        const first = statement.first.bind(statement);
+        statement.first = async () => {
+          const snapshot = await first();
+          if (readers < 2) {
+            readers++;
+            if (readers === 2) releaseReaders();
+            await bothRead;
+          }
+          return snapshot;
+        };
+      }
+      return statement;
+    };
+    const results = await Promise.all([
+      interaction(env, configInput('concurrent-config-a', { normal: 2 })),
+      interaction(env, configInput('concurrent-config-b', { normal: 3 }))
+    ]);
+    assert.equal(results.filter((result) => result.data.content.includes('Configuración guardada')).length, 1);
+    assert.equal(results.filter((result) => result.data.content.includes('cambió mientras')).length, 1);
+    assert.equal(DB.db.prepare("SELECT version FROM guild_config WHERE guild_id = 'guild-1'").get().version, before + 1);
+  } finally { DB.close(); }
+});
+
+test('canal configurado se valida con permisos efectivos y no restringe votos o cancelaciones antiguas', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex, DISCORD_BOT_TOKEN: 'test-only' };
+  let allowed = false;
+  mockDiscord(t, async (url, options) => {
+    if (url.includes('/applications/')) return Response.json([]);
+    if (options?.method === 'PATCH') return Response.json({ id: '999123' });
+    if (url.endsWith('/users/@me')) return Response.json({ id: 'bot' });
+    if (url.includes('/members/bot')) return Response.json({ roles: [] });
+    if (url.endsWith('/roles')) return Response.json([{ id: 'guild-1', permissions: allowed ? '19456' : '1024' }]);
+    if (url.includes('/channels/')) return Response.json({ guild_id: 'guild-1', type: 0, permission_overwrites: [] });
+    throw new Error('Unexpected test route');
+  });
+  try {
+    const rejected = await interaction(env, configInput('channel-denied', { canal: 'only-channel' }));
+    assert.match(rejected.data.content, /No puedo usar ese canal/);
+    allowed = true;
+    const saved = await interaction(env, configInput('channel-allowed', { canal: 'only-channel' }));
+    assert.match(saved.data.content, /Configuración guardada/);
+    const wrong = await interaction(env, duplicateInput('wrong-channel'));
+    assert.match(wrong.data.content, /only-channel/);
+    const old = await interaction(env, duplicateInput('old-channel-proposal', { interaction: { channel_id: 'only-channel' } }));
+    assert.ok(old.data.embeds);
+    await interaction(env, configInput('new-channel', { canal: 'different-channel' }));
+    const cancelled = await interaction(env, { ...base('creator'), channel_id: 'only-channel', type: 3, data: { custom_id: 'aura:cancel:old-channel-proposal' } });
+    assert.deepEqual(cancelled, { type: 6 });
+    await interaction(env, configInput('clear-channel', { canal_libre: true }));
+    assert.equal(DB.db.prepare("SELECT channel_id FROM guild_config WHERE guild_id = 'guild-1'").get().channel_id, null);
+    assert.ok((await interaction(env, duplicateInput('any-channel'))).data.embeds);
+  } finally { DB.close(); }
+});
+
+for (const choice of ['yes', 'no']) {
+  test(`umbrales personalizados permiten imponerse con 3 votos del rol: ${choice}`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      await interaction(env, configInput('custom-thresholds', { normal: 2, imponerse: 3 }));
+      await interaction(env, duplicateInput('custom-vote'));
+      for (let i = 0; i < 4; i++) await interaction(env, { ...base(`general-${i}`), type: 3, data: { custom_id: `aura:${choice === 'yes' ? 'no' : 'yes'}:custom-vote` } });
+      for (let i = 0; i < 2; i++) await interaction(env, { ...base(`role-${i}`, true), type: 3, data: { custom_id: `aura:${choice}:custom-vote` } });
+      assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'custom-vote'").get().status, 'open');
+      await interaction(env, { ...base('role-last', true), type: 3, data: { custom_id: `aura:${choice}:custom-vote` } });
+      const snapshot = await readProposalMessage(DB, 'custom-vote');
+      assert.equal(snapshot.proposal.status, choice === 'yes' ? 'approved' : 'rejected');
+      assert.match(snapshot.body.embeds[0].fields[2].value, /Regla de 3/);
+    } finally { DB.close(); }
+  });
+}
+
+for (const change of ['channel', 'rules']) {
+  test(`crear una propuesta consulta la configuración dentro del lote si cambia ${change}`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      await interaction(env, configInput('initial-policy', { normal: 4, imponerse: 6 }));
+      const batch = DB.batch.bind(DB);
+      let changed = false;
+      DB.batch = async (statements) => {
+        if (!changed && statements.some((statement) => statement.sql.includes('FROM guild_config g WHERE'))) {
+          changed = true;
+          if (change === 'channel') DB.db.exec("UPDATE guild_config SET channel_id = 'new-channel' WHERE guild_id = 'guild-1'");
+          else DB.db.exec("UPDATE guild_config SET voter_role_id = 'fresh-role', votes_to_close = 2, votes_to_override = 3 WHERE guild_id = 'guild-1'");
+        }
+        return batch(statements);
+      };
+      const result = await interaction(env, duplicateInput('policy-race'));
+      if (change === 'channel') {
+        assert.match(result.data.content, /configuración cambió/);
+        assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposals').get().n, 0);
+      } else {
+        assert.ok(result.data.embeds);
+        assert.equal(DB.db.prepare("SELECT voter_role_id FROM proposal_rules WHERE proposal_id = 'policy-race'").get().voter_role_id, 'fresh-role');
+        assert.equal(DB.db.prepare("SELECT votes_to_close FROM proposal_rules WHERE proposal_id = 'policy-race'").get().votes_to_close, 2);
+      }
+    } finally { DB.close(); }
+  });
+}
+
+test('configuración rechaza @everyone y roles no resueltos por Discord', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const everyone = await interaction(env, configInput('everyone-role', { rol: 'guild-1' }));
+    assert.match(everyone.data.content, /distinto de @everyone/);
+    const unknown = configInput('unknown-role', { rol: 'unknown' });
+    unknown.data.resolved.roles = {};
+    assert.match((await interaction(env, unknown)).data.content, /rol del servidor/);
+    assert.equal(DB.db.prepare("SELECT voter_role_id FROM guild_config WHERE guild_id = 'guild-1'").get().voter_role_id, '1431791263547392121');
+  } finally { DB.close(); }
+});
+
+function adminInput(id, action, values = {}, extra = {}) {
+  return { ...base('administrator'), id, type: 2,
+    member: { user: { id: 'administrator' }, roles: [], permissions: '8' },
+    data: { name: 'moderar', options: [{ name: action, options: Object.entries(values).map(([name, value]) => ({ name, value })) }] }, ...extra };
+}
+
+test('todas las acciones de moderación exigen Administrador y las respuestas son privadas', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (const action of ['listar', 'inspeccionar', 'cancelar', 'sincronizar', 'acciones']) {
+      for (const permissions of ['0', '32', '-1', 'invalid']) {
+        const denied = await interaction(env, adminInput(`denied-${action}-${permissions}`, action, {}, { member: { user: { id: 'ordinary' }, permissions } }));
+        assert.equal(denied.data.flags, 64);
+        assert.match(denied.data.content, /exclusivo.*Administrador/);
+      }
+    }
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 0);
+    const view = await interaction(env, adminInput('admin-list', 'listar'));
+    assert.equal(view.data.flags, 64);
+    assert.match(view.data.embeds[0].description, /No hay propuestas/);
+    assert.equal(commands.find((command) => command.name === 'moderar').default_member_permissions, '8');
+    const dm = await interaction(env, adminInput('admin-dm', 'listar', {}, { guild_id: undefined }));
+    assert.equal(dm.data.flags, 64);
+    assert.match(dm.data.content, /dentro de un servidor/);
+    const regularInfo = await interaction(env, { ...base('ordinary'), type: 2, data: { name: 'info' } });
+    assert.ok(!regularInfo.data.embeds[0].fields.some((field) => field.name.includes('/moderar')));
+  } finally { DB.close(); }
+});
+
+test('inspección y filtros del panel no filtran datos de otros servidores ni cambian la propuesta', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const { id } = await cancellableProposal(env);
+    const before = DB.db.prepare('SELECT * FROM proposals WHERE id = ?').get(id);
+    const inspect = await interaction(env, adminInput('inspect-own', 'inspeccionar', { propuesta: id }));
+    assert.equal(inspect.data.flags, 64);
+    assert.deepEqual(inspect.data.components, []);
+    assert.match(inspect.data.embeds[0].description, /Propuesta retirada/);
+    assert.ok(inspect.data.embeds[0].fields.some((field) => field.name === 'ID' && field.value === id));
+    const foreign = await interaction(env, adminInput('inspect-foreign', 'inspeccionar', { propuesta: id }, { guild_id: 'guild-2' }));
+    assert.match(foreign.data.content, /inexistente en este servidor/);
+    assert.doesNotMatch(foreign.data.content, /Propuesta retirada/);
+    const filtered = await interaction(env, adminInput('list-filtered', 'listar', { usuario: 'someone-else' }));
+    assert.match(filtered.data.embeds[0].description, /No hay propuestas/);
+    const list = await interaction(env, adminInput('list-open', 'listar', { usuario: 'target', estado: 'open' }));
+    assert.match(list.data.embeds[0].description, new RegExp(id));
+    assert.deepEqual(DB.db.prepare('SELECT * FROM proposals WHERE id = ?').get(id), before);
+  } finally { DB.close(); }
+});
+
+test('cancelación administrativa exige confirmación y audita el motivo sin publicarlo', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const edits = [];
+  mockDiscord(t, async (_url, options) => {
+    assert.equal(options.method, 'PATCH');
+    edits.push(JSON.parse(options.body));
+    return Response.json({ id: '999123' });
+  });
+  try {
+    const { id } = await cancellableProposal(env);
+    const values = { propuesta: id, motivo: 'Motivo administrativo privado' };
+    const preview = await interaction(env, adminInput('cancel-preview', 'cancelar', values));
+    assert.match(preview.data.content, /Vista previa/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'open');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 0);
+    const emptyReason = await interaction(env, adminInput('cancel-no-reason', 'cancelar', { propuesta: id, motivo: '  ', confirmar: true }));
+    assert.match(emptyReason.data.content, /motivo/);
+    env.DISCORD_BOT_TOKEN = 'test-only';
+    const request = adminInput('admin-cancel-confirmed', 'cancelar', { ...values, confirmar: true });
+    const cancelled = await interaction(env, request);
+    assert.equal(cancelled.data.flags, 64);
+    assert.match(cancelled.data.content, /cancelada y acción auditada/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'cancelled');
+    const action = DB.db.prepare('SELECT * FROM admin_actions').get();
+    assert.equal(action.actor_id, 'administrator');
+    assert.equal(action.reason, values.motivo);
+    assert.equal(action.previous_status, 'open');
+    assert.equal(action.result_status, 'cancelled');
+    assert.deepEqual(edits.at(-1).components, []);
+    assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada/);
+    assert.doesNotMatch(JSON.stringify(edits), /Motivo administrativo privado/);
+    await interaction(env, request);
+    await interaction(env, adminInput('admin-cancel-again', 'cancelar', { ...values, confirmar: true }));
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 1);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').get().n, 0);
+    const audit = await interaction(env, adminInput('view-audit', 'acciones', { propuesta: id }));
+    assert.match(audit.data.embeds[0].description, /Motivo administrativo privado/);
+    assert.match(audit.data.embeds[0].description, /administrator/);
+    const foreign = await interaction(env, adminInput('foreign-audit', 'acciones', { propuesta: id }, { guild_id: 'guild-2' }));
+    assert.match(foreign.data.embeds[0].description, /No hay acciones/);
+  } finally { DB.close(); }
+});
+
+test('el fallo del lote administrativo revierte la cancelación y su auditoría', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const { id } = await cancellableProposal(env);
+    const batch = DB.batch.bind(DB);
+    let fail = true;
+    DB.batch = async (statements) => {
+      if (fail && statements.some((statement) => statement.sql.includes('INSERT OR IGNORE INTO admin_actions'))) {
+        fail = false;
+        statements.push(DB.prepare('INSERT INTO missing_admin_table VALUES (1)'));
+      }
+      return batch(statements);
+    };
+    const request = adminInput('admin-rollback', 'cancelar', { propuesta: id, motivo: 'Prueba de reversión', confirmar: true });
+    const failure = await interaction(env, request);
+    assert.match(failure.data.content, /No pude confirmar la acción/);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'open');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 0);
+    await interaction(env, request);
+    assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, 'cancelled');
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 1);
+  } finally { DB.close(); }
+});
+
+for (const winner of ['vote', 'cancel']) {
+  test(`carrera con administrador: ${winner} confirma primero y no se corrige aura aprobada`, async () => {
+    const DB = new LocalD1();
+    const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+    try {
+      const { id, voteId } = await cancellableProposal(env);
+      for (let i = 0; i < 3; i++) await interaction(env, { ...base(`role-${i}`, true), type: 3, data: { custom_id: voteId } });
+      const cancel = adminInput('admin-race', 'cancelar', { propuesta: id, motivo: 'Cancelación concurrente', confirmar: true });
+      const vote = { ...base('deciding', true), type: 3, data: { custom_id: voteId } };
+      const batch = DB.batch.bind(DB);
+      let race = true;
+      DB.batch = async (statements) => {
+        const pending = winner === 'vote'
+          ? statements.some((statement) => statement.sql.includes('INSERT OR IGNORE INTO admin_actions'))
+          : statements.some((statement) => statement.sql.startsWith('INSERT INTO votes('));
+        if (race && pending) { race = false; await interaction(env, winner === 'vote' ? vote : cancel); }
+        return batch(statements);
+      };
+      await interaction(env, winner === 'vote' ? cancel : vote);
+      assert.equal(DB.db.prepare('SELECT status FROM proposals WHERE id = ?').get(id).status, winner === 'vote' ? 'approved' : 'cancelled');
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, winner === 'vote' ? 0 : 1);
+      assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, winner === 'vote' ? 4 : 3);
+    } finally { DB.close(); }
+  });
+}
+
+test('sincronizar es privado, confirmado y auditable sin reenviar avisos ni cambiar votos', async (t) => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  const edits = [];
+  mockDiscord(t, async (_url, options) => {
+    assert.equal(options.method, 'PATCH');
+    edits.push(JSON.parse(options.body));
+    return Response.json({ id: '999123' });
+  });
+  try {
+    const { id, cancelId } = await cancellableProposal(env);
+    await interaction(env, { ...base('creator'), type: 3, data: { custom_id: cancelId } });
+    const preview = await interaction(env, adminInput('sync-preview', 'sincronizar', { propuesta: id }));
+    assert.match(preview.data.content, /Vista previa/);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 0);
+    env.DISCORD_BOT_TOKEN = 'test-only';
+    const request = adminInput('admin-sync', 'sincronizar', { propuesta: id, confirmar: true });
+    const response = await interaction(env, request);
+    assert.match(response.data.content, /solicitada y auditada/);
+    await interaction(env, request);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 1);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').get().n, 0);
+    assert.deepEqual(edits.at(-1).components, []);
+    assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada/);
+  } finally { DB.close(); }
+});
+
+test('listas y auditoría administrativas están paginadas, filtran por estado y no vencen datos al leer', async () => {
+  const DB = new LocalD1();
+  const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    const insert = DB.db.prepare('INSERT INTO proposals(id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    for (let i = 0; i < 10; i++) {
+      insert.run(`panel-${i}`, 'guild-1', 'channel', 'target', 'creator', 100, `${i} ${'x'.repeat(250)}`, 100, 1);
+      DB.db.prepare('INSERT INTO admin_actions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(`audit-${i}`, 'guild-1', `panel-${i}`, 'administrator', 'sync', 'x'.repeat(250), 100, 'open', 'open');
+    }
+    const first = await interaction(env, adminInput('page-one', 'listar', { estado: 'expired', pagina: 1 }));
+    const second = await interaction(env, adminInput('page-two', 'listar', { estado: 'expired', pagina: 2 }));
+    assert.match(first.data.embeds[0].description, /panel-9[\s\S]*panel-2/);
+    assert.doesNotMatch(first.data.embeds[0].description, /panel-1`|panel-0`/);
+    assert.match(second.data.embeds[0].description, /panel-1[\s\S]*panel-0/);
+    assert.ok(first.data.embeds[0].description.length <= 4096);
+    const inspect = await interaction(env, adminInput('inspect-expired', 'inspeccionar', { propuesta: 'panel-0' }));
+    assert.match(inspect.data.embeds[0].fields[2].value, /Vencida/);
+    assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'panel-0'").get().status, 'open');
+    const audit = await interaction(env, adminInput('audit-page', 'acciones', { pagina: 2 }));
+    assert.match(audit.data.embeds[0].description, /panel-1[\s\S]*panel-0/);
+    assert.ok(audit.data.embeds[0].description.length <= 4096);
+    const filtered = await interaction(env, adminInput('audit-filter', 'acciones', { propuesta: 'panel-0' }));
+    assert.match(filtered.data.embeds[0].description, /panel-0/);
+    assert.doesNotMatch(filtered.data.embeds[0].description, /panel-1/);
+    assert.match((await interaction(env, adminInput('invalid-page', 'listar', { pagina: 0 }))).data.content, /página entera/);
+    assert.match((await interaction(env, adminInput('invalid-state', 'listar', { estado: 'invalid' }))).data.content, /estado válido/);
+    assert.match((await interaction(env, adminInput('invalid-id', 'inspeccionar', { propuesta: '`bad`' }))).data.content, /ID de propuesta válido/);
+    assert.match((await interaction(env, adminInput('out-of-range', 'acciones', { pagina: 3 }))).data.content, /2 página/);
   } finally { DB.close(); }
 });

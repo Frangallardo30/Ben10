@@ -12,8 +12,14 @@ export const DUPLICATE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS proposals_duplica
 export const INSERT_PROPOSAL_SQL = `INSERT INTO proposals
   (id, guild_id, channel_id, target_id, proposer_id, amount, reason, created_at, expires_at)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-  WHERE NOT EXISTS (SELECT 1 FROM proposal_creation_attempts WHERE interaction_id = ?)
+  FROM guild_config g WHERE g.guild_id = ? AND g.voter_role_id IS NOT NULL
+    AND (g.channel_id IS NULL OR g.channel_id = ?)
+    AND NOT EXISTS (SELECT 1 FROM proposal_creation_attempts WHERE interaction_id = ?)
     AND NOT EXISTS (
     SELECT 1 FROM proposals WHERE guild_id = ? AND target_id = ? AND reason = ?
       AND status = 'open' AND expires_at > unixepoch()
   ) ON CONFLICT(id) DO NOTHING`;
+
+export const SNAPSHOT_RULES_SQL = `INSERT OR IGNORE INTO proposal_rules(proposal_id, voter_role_id, votes_to_close, votes_to_override)
+  SELECT p.id, g.voter_role_id, g.votes_to_close, g.votes_to_override
+  FROM proposals p JOIN guild_config g ON g.guild_id = p.guild_id WHERE p.id = ?`;

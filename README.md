@@ -9,19 +9,21 @@ El seguimiento del proyecto está en la [lista de tareas](docs/tasks/README.md).
 ## Cómo funciona
 
 - `/aura usuario:@Fran puntos:-100 motivo:Perdió una partida` publica una propuesta con botones 👍 **Aprobar** y 👎 **Desaprobar**. También podés postular tu propia aura.
-- Todos pueden votar y sus votos aparecen en el recuento. Los votos de miembros con el rol `1431791263547392121` también aparecen en un recuento separado. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
-- La votación se cierra con **cuatro votos iguales del rol** si esa opción empata o lidera el total general. Si va perdiendo en el total, necesita **seis votos iguales del rol** para imponerse. Los votos del resto siempre cuentan en el total y pueden cambiar cuándo se alcanza el cierre. Si no hay resultado, vence a las 24 horas sin cambiar el aura.
+- Todos pueden votar y sus votos aparecen en el recuento. Los votos de miembros con el rol decisor de la propuesta también aparecen en un recuento separado. Quien propone y quien recibe los puntos no pueden votar; cada persona puede cambiar su voto mientras la propuesta esté abierta.
+- Con las reglas históricas, la votación se cierra con **cuatro votos iguales del rol** si esa opción empata o lidera el total general. Si va perdiendo en el total, necesita **seis votos iguales del rol** para imponerse. Los votos del resto siempre cuentan en el total y pueden cambiar cuándo se alcanza el cierre. Si no hay resultado, vence a las 24 horas sin cambiar el aura.
 - Si ya hay una propuesta abierta y sin vencer para la misma persona y el mismo motivo exacto, el bot avisa y no crea otra, aunque cambien autor o puntos.
 - Quien creó una propuesta puede retirarla con **Cancelar propuesta** mientras siga abierta. La cancelación conserva los votos y no cambia el aura.
 - `/perfil usuario:@Fran` muestra aura, propuestas recibidas aprobadas/rechazadas, votos registrados y evolución acumulada de los últimos cinco cambios aprobados. Sin usuario, muestra tu perfil.
 - `/historial usuario:@Fran pagina:1` muestra todos los cambios aprobados, con puntos, motivos, fecha y quién los propuso. Hay ocho movimientos por página; sin usuario, muestra tu historial.
 - `/votaciones [usuario] [pagina]` consulta todas las propuestas recibidas, con sus estados, ocho por página. Sin usuario, muestra las tuyas.
 - `/ranking` muestra las diez personas con más aura del servidor, sumando solo cambios aprobados. Los empates comparten puesto y no se generan notificaciones por mención.
+- `/moderar` es el panel privado exclusivo de **Administrador**: listar, inspeccionar, cancelar abiertas con confirmación, sincronizar mensajes y ver auditoría. Los ajustes forzados de puntos y el retiro de historial se implementarán por separado. Ver la [guía del panel](docs/operations/moderation.md).
+- `/config ver` consulta las reglas. Con **Administrar servidor**, `/config cambiar rol:@Decisor normal:4 imponerse:6 canal:#aura` configura las propuestas nuevas. `canal_libre:true` quita la restricción de canal. Las propuestas abiertas conservan sus reglas y los servidores nuevos necesitan elegir un rol.
 - `/info` explica los comandos y las reglas de votación dentro de Discord.
 
 ## Preparación
 
-Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 10** (`1417570023370653836`). Cloudflare puede cambiar límites y requisitos de su plan gratuito; revisalos al crear la cuenta. El bot requiere **Guild Install** con `applications.commands` y permisos **View Channels** y **Send Messages** para actualizar la votación y publicar el aviso de cierre.
+Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 10** (`1417570023370653836`). Cloudflare puede cambiar límites y requisitos de su plan gratuito; revisalos al crear la cuenta. El bot requiere **Guild Install** con `applications.commands` y permisos **View Channels**, **Send Messages** y **Embed Links** para actualizar la votación y publicar el aviso de cierre.
 
 ### Desde el navegador, sin instalar nada
 
@@ -29,7 +31,7 @@ Necesitás una cuenta gratuita de Cloudflare y la aplicación de Discord **Ben 1
 2. En **Workers y Pages → Crear aplicación**, elegí crear un **Worker** desde un repositorio de GitHub y seleccioná `Frangallardo30/Ben10`. Si pide un comando de despliegue, usá `npx wrangler deploy`; el directorio raíz es `/`.
 3. El binding `MESSAGE_SYNC` y la migración del Durable Object están declarados en `wrangler.toml` y se crean al desplegar con Wrangler. La Public Key y el Application ID ya están declarados en `wrangler.toml`. En el Worker `ben10`, abrí **Settings → Variables and Secrets** y agregá `DISCORD_BOT_TOKEN` como secreto de producción. El token está en la sección **Bot** de Discord. No lo guardes en archivos del repositorio ni lo pegues en el chat.
 4. En **Discord Developer Portal → Ben 10 → General Information**, guardá `https://ben10.<tu-subdominio>.workers.dev/interactions` como **Interactions Endpoint URL**. Usá la URL exacta que Cloudflare muestre para tu Worker.
-5. El Worker registra `/aura`, `/perfil`, `/historial`, `/votaciones`, `/ranking` y `/info` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
+5. El Worker registra `/aura`, `/perfil`, `/historial`, `/votaciones`, `/ranking`, `/config`, `/moderar` y `/info` automáticamente cuando Discord verifica el endpoint o cuando se ejecuta la tarea programada (cada cinco minutos). No hace falta copiar el token a GitHub. Los comandos globales pueden tardar un poco más en aparecer en el servidor.
 
 El endpoint no necesita que mantengas una computadora encendida. Los secretos se guardan en Cloudflare y nunca en GitHub.
 
@@ -42,9 +44,9 @@ El endpoint no necesita que mantengas una computadora encendida. Los secretos se
 5. Ejecutá `npm run deploy`. Copiá la URL `https://ben10.<tu-subdominio>.workers.dev/interactions`.
 6. En **Discord Developer Portal → Ben 10 → General Information**, pegá esa URL en **Interactions Endpoint URL** y guardá. Discord verificará la firma y la respuesta del endpoint.
 7. Registrá los comandos desde tu terminal con el token en una variable privada: `DISCORD_BOT_TOKEN=... npm run register`. No guardes ese comando con el valor real en archivos ni en el historial del shell.
-8. Invitá el bot al servidor con [esta URL](https://discord.com/oauth2/authorize?client_id=1417570023370653836&scope=bot%20applications.commands&permissions=3072).
+8. Invitá el bot al servidor con [esta URL](https://discord.com/oauth2/authorize?client_id=1417570023370653836&scope=bot%20applications.commands&permissions=19456).
 
-Para probar, usá `/aura` en un canal de texto y votá con miembros del rol y sin él. `/perfil` se actualiza cuando cuatro miembros del rol votan positivo. El Worker responde solo a solicitudes firmadas por Discord.
+Para probar, usá `/aura` en un canal de texto y votá con miembros del rol y sin él. `/perfil` se actualiza cuando se alcanza el umbral de aprobación guardado en la propuesta. El Worker responde solo a solicitudes firmadas por Discord.
 Los votos de propuestas abiertas bajo la regla anterior se conservan; sus votos del rol se trasladan al recuento especial.
 
 ## Datos

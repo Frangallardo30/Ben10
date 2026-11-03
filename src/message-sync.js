@@ -13,12 +13,12 @@ export const QUEUE_MESSAGE_SYNC_SQL = `INSERT INTO proposal_message_sync(proposa
 
 // One SQL statement provides a consistent snapshot of status, counts and revision.
 export async function readProposalMessage(db, id) {
-  const proposal = await db.prepare(`SELECT p.*, s.revision, s.synced_revision, s.retry_at,
+  const proposal = await db.prepare(`SELECT p.*, s.revision, s.synced_revision, s.retry_at, r.voter_role_id, r.votes_to_close, r.votes_to_override,
     (SELECT COUNT(*) FROM votes WHERE proposal_id = p.id AND choice = 'yes') AS yes,
     (SELECT COUNT(*) FROM votes WHERE proposal_id = p.id AND choice = 'no') AS no,
     (SELECT COUNT(*) FROM role_votes WHERE proposal_id = p.id AND choice = 'yes') AS roleYes,
     (SELECT COUNT(*) FROM role_votes WHERE proposal_id = p.id AND choice = 'no') AS roleNo
-    FROM proposals p LEFT JOIN proposal_message_sync s ON s.proposal_id = p.id WHERE p.id = ?`).bind(id).first();
+    FROM proposals p LEFT JOIN proposal_message_sync s ON s.proposal_id = p.id LEFT JOIN proposal_rules r ON r.proposal_id = p.id WHERE p.id = ?`).bind(id).first();
   return proposal ? { proposal, body: display(proposal, proposal) } : null;
 }
 

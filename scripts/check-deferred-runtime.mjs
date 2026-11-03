@@ -22,6 +22,10 @@ const runtime = new Miniflare(convertV4MiniflareOptions({
     const body = request.method === 'GET' ? null : await request.json();
     events.push({ url: request.url, method: request.method, body });
     for (const listener of listeners) listener();
+    if (request.method === 'GET' && request.url.includes('/channels/')) return Response.json({ guild_id: 'guild', type: 0, permission_overwrites: [] });
+    if (request.url.endsWith('/roles')) return Response.json([{ id: 'guild', permissions: '19456' }]);
+    if (request.url.endsWith('/users/@me')) return Response.json({ id: 'bot' });
+    if (request.url.includes('/members/bot')) return Response.json({ roles: [] });
     return Response.json(request.url.includes('/applications/') ? [] : { id: '999123' });
   }
 }));
@@ -57,6 +61,7 @@ try {
   const db = await runtime.getD1Database('DB');
   const schema = await readFile(new URL('../schema.sql', import.meta.url), 'utf8');
   for (const sql of schema.split(';').map((sql) => sql.trim()).filter(Boolean)) await db.prepare(sql).run();
+  await db.prepare('INSERT INTO guild_config(guild_id, voter_role_id, votes_to_close, votes_to_override) VALUES (?, ?, ?, ?)').bind('guild', '1431791263547392121', 4, 6).run();
   assert.deepEqual(await dispatch({ id: '100000', type: 1 }), { type: 1 });
   const invalid = await runtime.dispatchFetch('https://worker.test/interactions', {
     method: 'POST', headers: { 'X-Signature-Ed25519': '00'.repeat(64),
@@ -130,7 +135,9 @@ try {
   assert.match(votingHistory.embeds[0].footer.text, /2 propuestas/);
   assert.deepEqual(votingHistory.allowed_mentions, { parse: [] });
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposals').first()).n, 2);
-  const info = await dispatch({ id: '100022', token: 'runtime-info', type: 2, data: { name: 'info' } });
+  assert.deepEqual(await dispatch({ id: '100022', token: 'runtime-info', type: 2, data: { name: 'info' } }), { type: 5 });
+  await until(() => events.some((event) => event.url.includes('runtime-info') && event.body?.embeds));
+  const info = { data: events.find((event) => event.url.includes('runtime-info')).body };
   assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/ranking')));
   assert.ok(info.data.embeds[0].fields.some((field) => field.name.includes('/votaciones')));
   assert.ok(events.some((event) => event.url.includes('/applications/') && event.method === 'PUT' && event.body.some((command) => command.name === 'ranking')));
@@ -143,8 +150,61 @@ try {
   await until(() => events.some((event) => event.url.includes('runtime-duplicate-') && event.body?.content?.includes('Ya hay una votación abierta')));
   await until(() => messageEdits().some((event) => event.body.embeds[0].description.includes('Concurrent duplicate')));
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposals WHERE reason = ?').bind('Concurrent duplicate').first()).n, 1);
+  const configure = (id, role, normal, override, channel) => ({ id, token: `runtime-config-${id}`, type: 2,
+    member: { user: { id: 'admin' }, permissions: '32' }, data: { name: 'config',
+      resolved: { roles: { [role]: { id: role, name: 'Decisor' } } },
+      options: [{ name: 'cambiar', options: [ { name: 'rol', value: role }, { name: 'normal', value: normal },
+        { name: 'imponerse', value: override }, { name: 'canal', value: channel } ] }] } });
+  assert.deepEqual(await dispatch(configure('100040', 'custom-role', 2, 3, 'config-channel')), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-config-100040') && event.body?.content?.includes('Configuración guardada')));
+  const configured = { ...aura, id: '100041', token: 'runtime-configured-aura', channel_id: 'config-channel',
+    data: { ...aura.data, options: aura.data.options.map((option) => option.name === 'motivo' ? { ...option, value: 'Configured rules' } : option) } };
+  assert.deepEqual(await dispatch(configured), { type: 5 });
+  await until(() => messageEdits().some((event) => event.body.components[0]?.components[0]?.custom_id === 'aura:yes:100041'));
+  assert.deepEqual(await dispatch(configure('100042', 'later-role', 3, 4, 'later-channel')), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-config-100042') && event.body?.content?.includes('Configuración guardada')));
+  for (let i = 0; i < 2; i++) {
+    const before = messageEdits().length;
+    assert.deepEqual(await dispatch({ id: String(100043 + i), token: `runtime-custom-vote-${i}`, type: 3, channel_id: 'config-channel',
+      member: { user: { id: `custom-${i}` }, roles: ['custom-role'] }, data: { custom_id: 'aura:yes:100041' } }), { type: 6 });
+    await until(() => messageEdits().length > before);
+  }
+  assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100041').first()).status, 'approved');
+  assert.equal((await db.prepare('SELECT votes_to_close FROM proposal_rules WHERE proposal_id = ?').bind('100041').first()).votes_to_close, 2);
+  assert.match(messageEdits().at(-1).body.embeds[0].fields[2].value, /Regla de 2/);
+  const adminProposal = { ...aura, id: '100060', token: 'runtime-admin-proposal', channel_id: 'later-channel',
+    data: { ...aura.data, options: aura.data.options.map((option) => option.name === 'motivo' ? { ...option, value: 'Admin cancellation' } : option) } };
+  assert.deepEqual(await dispatch(adminProposal), { type: 5 });
+  await until(() => messageEdits().some((event) => event.body.components[0]?.components[0]?.custom_id === 'aura:yes:100060'));
+  const panel = (id, action, options, permissions = '8') => ({ id, token: `runtime-admin-${id}`, type: 2,
+    member: { user: { id: 'moderator' }, permissions },
+    data: { name: 'moderar', options: [{ name: action, options: Object.entries(options).map(([name, value]) => ({ name, value })) }] } });
+  const denied = await dispatch(panel('100061', 'listar', {}, '32'));
+  assert.equal(denied.type, 4);
+  assert.equal(denied.data.flags, 64);
+  assert.match(denied.data.content, /exclusivo/);
+  const cancelValues = { propuesta: '100060', motivo: 'Private audit reason' };
+  assert.deepEqual(await dispatch(panel('100062', 'cancelar', cancelValues)), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-admin-100062') && event.body?.content?.includes('Vista previa')));
+  assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100060').first()).status, 'open');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 0);
+  const adminCancel = panel('100063', 'cancelar', { ...cancelValues, confirmar: true });
+  assert.deepEqual(await dispatch(adminCancel), { type: 5, data: { flags: 64 } });
+  await until(() => messageEdits().some((event) => event.body.embeds[0].description.includes('Admin cancellation') && event.body.components.length === 0));
+  assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100060').first()).status, 'cancelled');
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 1);
+  assert.equal((await db.prepare('SELECT SUM(amount) AS n FROM proposals WHERE status = ?').bind('approved').first()).n, 200);
+  assert.ok(messageEdits().every((event) => !JSON.stringify(event.body).includes('Private audit reason')));
+  assert.deepEqual(await dispatch(adminCancel), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-admin-100063') && event.body?.content?.includes('ya fue procesada')));
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 1);
+  assert.deepEqual(await dispatch(panel('100064', 'acciones', { propuesta: '100060' })), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-admin-100064') && event.body?.embeds?.[0]?.description.includes('Private audit reason')));
+  assert.deepEqual(await dispatch(panel('100065', 'sincronizar', { propuesta: '100060', confirmar: true })), { type: 5, data: { flags: 64 } });
+  await until(() => events.some((event) => event.url.includes('runtime-admin-100065') && event.body?.content?.includes('solicitada y auditada')));
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 2);
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));
-  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking/votaciones on D1 and Durable Objects, and handles concurrent duplicate creation, retries, cancellation and D1 failure. Discord mocked; no remote requests.');
+  console.log('PASS: workerd verifies signed PING, rejects invalid signatures, runs proposal/voting/profile/ranking/votaciones on D1 and Durable Objects, and enforces administrator-only audited moderation, per-guild proposal rules, concurrent duplicate creation, retries, cancellation and D1 failure. Discord mocked; no remote requests.');
 } finally { await runtime.dispose(); }

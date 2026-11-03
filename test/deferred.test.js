@@ -163,7 +163,7 @@ test('perfil e historial no preparan tablas; las escrituras preparan una sola ve
   const batch = DB.batch.bind(DB);
   let preparations = 0;
   DB.batch = async (statements) => {
-    if (statements.some((statement) => statement.sql.startsWith('CREATE TABLE'))) preparations++;
+    if (statements.some((statement) => statement.sql.startsWith('CREATE TABLE IF NOT EXISTS bot_settings'))) preparations++;
     return batch(statements);
   };
   for (const name of ['perfil', 'historial', 'votaciones', 'ranking']) {

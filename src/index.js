@@ -1,4 +1,6 @@
-import { INSERT_PROPOSAL_SQL, RECORD_CREATION_ATTEMPT_SQL } from './proposals.js';
+import { isAdministrator, moderate } from './moderation.js';
+import { canManageGuild, getGuildConfig, changeGuildConfig, configSummary } from './guild-config.js';
+import { INSERT_PROPOSAL_SQL, RECORD_CREATION_ATTEMPT_SQL, SNAPSHOT_RULES_SQL } from './proposals.js';
 import { diagnostic, diagnosticDatabase, discordRequest, discordJSON, OperationalError, reportFailure } from './diagnostics.js';
 import { historyDateExpression } from './proposal-dates.js';
 import { prepareWrites } from './database.js';
@@ -87,7 +89,7 @@ async function ensureCommandsRegistered(env) {
     return;
   }
   await prepareWrites(env.DB);
-  const version = 'aura-profile-history-info-ranking-stats-votaciones-v7';
+  const version = 'moderation-v9';
   const saved = await env.DB.prepare("SELECT value FROM bot_settings WHERE key = 'commands_version'").first();
   const path = `/applications/${env.DISCORD_APPLICATION_ID}/commands`;
   if (saved?.value === version) {
@@ -120,7 +122,18 @@ function checkCommandsInBackground(env, ctx) {
 }
 
 async function command(interaction, env, ctx) {
+  if (interaction.data.name === 'moderar') {
+    await prepareWrites(env.DB);
+    return reply({ type: 4, data: await moderate(interaction, env, ctx) });
+  }
+  if (interaction.data.name === 'config') {
+    await prepareWrites(env.DB);
+    if (interaction.data.options?.[0]?.name === 'cambiar') return reply({ type: 4, data: await changeGuildConfig(interaction, env) });
+    return reply({ type: 4, data: { content: configSummary(await getGuildConfig(env.DB, interaction.guild_id)) } });
+  }
   if (interaction.data.name === 'info') {
+    let rules = null;
+    if (interaction.guild_id) { await prepareWrites(env.DB); rules = await getGuildConfig(env.DB, interaction.guild_id); }
     return reply({ type: 4, data: {
       allowed_mentions: { parse: [] },
       embeds: [{
@@ -133,7 +146,9 @@ async function command(interaction, env, ctx) {
           { name: '📜 /historial', value: 'Lista los cambios aprobados con fecha, puntos, motivo y quién los propuso. Podés elegir `usuario` y `pagina` (8 cambios por página).', inline: false },
           { name: '📋 /votaciones', value: 'Lista todas las propuestas recibidas por `usuario` (o por vos), con estado y proponente. Incluye abiertas, aprobadas, rechazadas, vencidas y canceladas; 8 por página.', inline: false },
           { name: '🏆 /ranking', value: 'Muestra las 10 personas con más aura de este servidor. Solo cuentan los cambios aprobados; los empates comparten puesto.', inline: false },
-          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. Los votos del rol <@&${AURA_VOTER_ROLE_ID}> cierran la votación: bastan 4 iguales si esa opción empata o lidera el total; si va perdiendo, necesita 6. Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
+          ...(isAdministrator(interaction) ? [{ name: '🛡️ /moderar', value: 'Panel privado: listar, inspeccionar, cancelar abiertas, sincronizar mensajes y consultar auditoría. Cancelar/sincronizar requiere confirmar:true.', inline: false }] : []),
+          { name: '⚙️ /config', value: 'Ver reglas del servidor o cambiarlas con Administrar servidor. Los cambios solo afectan propuestas nuevas.', inline: false },
+          { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. ${rules?.voter_role_id ? `Los votos del rol <@&${rules.voter_role_id}> cierran con ${rules.votes_to_close} iguales si esa opción empata o lidera; si va perdiendo, necesita ${rules.votes_to_override}.` : 'Un administrador debe configurar el rol decisor con /config cambiar antes de crear propuestas.'} ${rules?.channel_id ? `Canal de propuestas nuevas: <#${rules.channel_id}>.` : 'Se permiten propuestas en cualquier canal habilitado para el bot.'} Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
         footer: { text: 'El aura cambia solo cuando una propuesta es aprobada.' }
       }]
@@ -252,15 +267,23 @@ async function command(interaction, env, ctx) {
   const reason = String(option(interaction, 'motivo') ?? '').trim();
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000 || !reason || reason.length > 250) return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
   await prepareWrites(env.DB);
+  const previous = await readProposalMessage(env.DB, interaction.id);
+  if (previous) return reply({ type: 4, data: previous.body });
+  const policy = await getGuildConfig(env.DB, interaction.guild_id);
+  if (!policy.voter_role_id) return ephemeral('Este servidor necesita un rol decisor. Pedile a alguien con Administrar servidor que use /config cambiar.');
+  if (policy.channel_id && policy.channel_id !== interaction.channel_id) return ephemeral(`Las propuestas nuevas se crean en <#${policy.channel_id}>.`);
   const createdAt = Math.floor(Date.now() / 1000);
   const proposal = { id: interaction.id, guild_id: interaction.guild_id, channel_id: interaction.channel_id, target_id: target, proposer_id: actor(interaction), amount, reason, created_at: createdAt, expires_at: createdAt + PROPOSAL_LIFETIME_SECONDS, status: 'open' };
   const creation = await env.DB.batch([
     env.DB.prepare(INSERT_PROPOSAL_SQL).bind(proposal.id, proposal.guild_id, proposal.channel_id, proposal.target_id,
-      proposal.proposer_id, amount, reason, proposal.created_at, proposal.expires_at, proposal.id, proposal.guild_id, proposal.target_id, reason),
-    env.DB.prepare(RECORD_CREATION_ATTEMPT_SQL).bind(proposal.id)
+      proposal.proposer_id, amount, reason, proposal.created_at, proposal.expires_at, proposal.guild_id, proposal.channel_id, proposal.id, proposal.guild_id, proposal.target_id, reason),
+    env.DB.prepare(RECORD_CREATION_ATTEMPT_SQL).bind(proposal.id),
+    env.DB.prepare(SNAPSHOT_RULES_SQL).bind(proposal.id)
   ]);
   const saved = await readProposalMessage(env.DB, proposal.id);
   if (!saved) {
+    const current = await getGuildConfig(env.DB, interaction.guild_id);
+    if (!current.voter_role_id || current.channel_id && current.channel_id !== interaction.channel_id) return ephemeral('La configuración cambió mientras creabas la propuesta. Consultá /config ver y enviá una solicitud nueva.');
     diagnostic('info', 'PROPOSAL_DUPLICATE', 'validation');
     return ephemeral(creation[1].meta.changes === 0
       ? 'Esta solicitud ya fue rechazada por duplicado. Si la votación anterior ya cerró, creá una propuesta nueva.'
@@ -294,7 +317,8 @@ async function vote(interaction, env, ctx) {
   }
   const user = actor(interaction);
   if (!canVote(user, proposal)) return ephemeral('Quien propone y quien recibe no pueden votar.');
-  const hasRole = interaction.member?.roles?.includes(AURA_VOTER_ROLE_ID) ?? false;
+  const rules = await env.DB.prepare('SELECT voter_role_id FROM proposal_rules WHERE proposal_id = ?').bind(id).first();
+  const hasRole = interaction.member?.roles?.includes(rules?.voter_role_id ?? AURA_VOTER_ROLE_ID) ?? false;
   const roleVote = hasRole
     ? env.DB.prepare(UPSERT_ROLE_VOTE_SQL).bind(id, user, choice, id, interaction.id)
     : env.DB.prepare(REMOVE_ROLE_VOTE_SQL).bind(id, user, interaction.id);
@@ -369,7 +393,9 @@ async function finishInteraction(interaction, env, ctx) {
     await withDeadline(performInteraction(interaction, env, ctx));
   } catch (error) {
     reportFailure('INTERACTION_FAILED', error);
-    const message = isCommand && interaction.data.name !== 'aura'
+    const configChange = isCommand && interaction.data.name === 'config' && interaction.data.options?.[0]?.name === 'cambiar';
+    const adminChange = isCommand && interaction.data.name === 'moderar' && ['cancelar', 'sincronizar'].includes(interaction.data.options?.[0]?.name);
+    const message = adminChange ? 'No pude confirmar la acción. Consultá /moderar acciones antes de volver a intentarlo.' : configChange ? 'No pude confirmar la configuración. Consultá /config ver antes de volver a intentarlo.' : isCommand && interaction.data.name !== 'aura'
       ? 'No pude consultar los datos. Intentá de nuevo en unos segundos.'
       : 'No pude confirmar la operación. Consultá /perfil antes de volver a intentarlo.';
     try {
@@ -385,7 +411,7 @@ function deferInteraction(interaction, env, ctx) {
     return ephemeral('La interacción no tiene los datos necesarios. Intentá de nuevo.');
   }
   ctx.waitUntil(Promise.resolve().then(() => finishInteraction(interaction, env, ctx)));
-  return reply({ type: interaction.type === 2 ? 5 : 6 });
+  return reply({ type: interaction.type === 2 ? 5 : 6, ...(['config', 'moderar'].includes(interaction.data?.name) ? { data: { flags: 64 } } : {}) });
 }
 
 export default {
@@ -403,10 +429,16 @@ export default {
         return reply({ type: 1 });
       }
       if (interaction.type === 2) {
-        if (!['aura', 'perfil', 'historial', 'votaciones', 'ranking', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
+        if (!['aura', 'perfil', 'historial', 'votaciones', 'ranking', 'config', 'moderar', 'info'].includes(interaction.data?.name)) return ephemeral('Comando desconocido.');
         checkCommandsInBackground(env, ctx);
-        if (interaction.data.name === 'info') return command(interaction, env, ctx);
+        if (interaction.data.name === 'info' && !interaction.guild_id) return command(interaction, env, ctx);
         if (!interaction.guild_id) return ephemeral('Usá estos comandos dentro de un servidor.');
+        if (interaction.data.name === 'moderar' && !isAdministrator(interaction)) return ephemeral('Este panel es exclusivo de quienes tienen Administrador.');
+        if (interaction.data.name === 'config') {
+          const subcommand = interaction.data.options?.[0]?.name;
+          if (!['ver', 'cambiar'].includes(subcommand)) return ephemeral('Usá /config ver o /config cambiar.');
+          if (subcommand === 'cambiar' && !canManageGuild(interaction)) return ephemeral('Necesitás Administrar servidor para cambiar la configuración.');
+        }
         if (interaction.data.name === 'votaciones') {
           const page = option(interaction, 'pagina') ?? 1;
           if (!Number.isInteger(page) || page < 1 || page > 1000000) return ephemeral('Elegí una página entera entre 1 y 1000000.');

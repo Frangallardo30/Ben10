@@ -19,9 +19,11 @@ Cada tarea tiene un archivo propio siguiendo [TEMPLATE.md](TEMPLATE.md). Al trab
 | [B10-013](complete/B10-013.md) | Añadir estadísticas personales | Hecha | Media |
 | [B10-014](B10-014.md) | Consultar historial de votaciones | En curso | Media |
 | [B10-015](complete/B10-015.md) | Evitar propuestas duplicadas | Hecha | Media |
-| [B10-016](B10-016.md) | Configurar el bot por servidor | Pendiente | Alta |
-| [B10-017](B10-017.md) | Panel de moderación | Pendiente | Alta |
+| [B10-016](complete/B10-016.md) | Configurar el bot por servidor | Hecha | Alta |
+| [B10-017](complete/B10-017.md) | Panel de moderación | Hecha | Alta |
 | [B10-018](B10-018.md) | Recuperar /info e /historial en Discord | En curso | Alta |
 | [B10-019](complete/B10-019.md) | Archivar las tareas completas | Hecha | Media |
 
-Para una tarea nueva, copiá la plantilla como `B10-020.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales. El [flujo de Codex](../../.codex/workflows/tasks.md) explica cómo relacionar tareas y [especificaciones vigentes](../specs/README.md).
+| [B10-020](B10-020.md) | Ajustar aura y anular historial por administración | Pendiente | Alta |
+
+Para una tarea nueva, copiá la plantilla como `B10-021.md` y añadila a esta tabla. No marques como hecha una comprobación remota basándote solo en pruebas locales. El [flujo de Codex](../../.codex/workflows/tasks.md) explica cómo relacionar tareas y [especificaciones vigentes](../specs/README.md).

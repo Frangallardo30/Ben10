@@ -8,10 +8,10 @@ export const REMOVE_ROLE_VOTE_SQL = "DELETE FROM role_votes WHERE proposal_id = 
 
 export const CLOSE_PROPOSAL_SQL = `UPDATE proposals SET status = (
   SELECT CASE
-    WHEN role_yes >= ${VOTES_TO_OVERRIDE} THEN 'approved'
-    WHEN role_no >= ${VOTES_TO_OVERRIDE} THEN 'rejected'
-    WHEN role_yes >= ${VOTES_TO_CLOSE} AND (all_yes > all_no OR (all_yes = all_no AND role_no < ${VOTES_TO_CLOSE})) THEN 'approved'
-    WHEN role_no >= ${VOTES_TO_CLOSE} AND (all_no > all_yes OR (all_yes = all_no AND role_yes < ${VOTES_TO_CLOSE})) THEN 'rejected'
+    WHEN role_yes >= COALESCE((SELECT votes_to_override FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_OVERRIDE}) THEN 'approved'
+    WHEN role_no >= COALESCE((SELECT votes_to_override FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_OVERRIDE}) THEN 'rejected'
+    WHEN role_yes >= COALESCE((SELECT votes_to_close FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_CLOSE}) AND (all_yes > all_no OR (all_yes = all_no AND role_no < COALESCE((SELECT votes_to_close FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_CLOSE}))) THEN 'approved'
+    WHEN role_no >= COALESCE((SELECT votes_to_close FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_CLOSE}) AND (all_no > all_yes OR (all_yes = all_no AND role_yes < COALESCE((SELECT votes_to_close FROM proposal_rules WHERE proposal_id = proposals.id), ${VOTES_TO_CLOSE}))) THEN 'rejected'
     ELSE 'open'
   END FROM (
     SELECT

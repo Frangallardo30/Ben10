@@ -4,11 +4,25 @@
 
 `/aura usuario puntos motivo` crea una propuesta en el servidor actual. `puntos` es un entero entre -1000 y 1000, excluido 0; `motivo` debe tener entre 1 y 250 caracteres después de quitar espacios de los extremos. Se permite la postulación propia.
 
-La propuesta aparece con botones para aprobar o desaprobar. Cada persona puede emitir un voto y cambiarlo mientras esté abierta. Quien propone y quien recibe el aura no pueden votar. Todos los votos cuentan en el total general. Los miembros del rol `1431791263547392121` también suman en el recuento especial del rol. Esta condición se toma al emitir o cambiar el voto; perder el rol después no la quita hasta volver a votar.
+La propuesta aparece con botones para aprobar o desaprobar. Cada persona puede emitir un voto y cambiarlo mientras esté abierta. Quien propone y quien recibe el aura no pueden votar. Todos los votos cuentan en el total general. Los miembros del rol decisor guardado en cada propuesta también suman en el recuento especial del rol. Esta condición se toma al emitir o cambiar el voto; perder el rol después no la quita hasta volver a votar.
 
-La propuesta se aprueba o rechaza cuando una opción reúne cuatro votos del rol y empata o lidera el recuento general. Si esa opción va perdiendo en el total, necesita seis votos del rol para imponerse. Seis votos del rol en una opción tienen precedencia en el cierre. Si ambas opciones tienen cuatro votos del rol y el total general empata, sigue abierta hasta que se alcance otra condición. Tras el cierre no admite más votos. El mensaje final conserva los recuentos general y del rol e indica si decidió la regla de cuatro votos del rol (empatando o liderando el total) o la de seis (que decide incluso si va perdiendo). La explicación usa el resultado guardado y los votos conservados, no la opción del último botón pulsado. Una propuesta vencida muestra el vencimiento sin atribuirlo a un umbral de votos.
+La propuesta se aprueba o rechaza cuando una opción reúne el umbral normal de votos del rol y empata o lidera el recuento general. Si esa opción va perdiendo en el total, necesita el umbral para imponerse. Este segundo umbral tiene precedencia. Si ambas opciones alcanzan el normal y el total general empata, sigue abierta hasta que se alcance otra condición. Tras el cierre no admite más votos. El mensaje final conserva ambos recuentos y explica cuál de sus umbrales decidió el resultado guardado. Los valores históricos son cuatro y seis. Las vencidas y canceladas muestran su estado sin atribuirlo a un umbral de votos.
 
 Si no se alcanza un resultado, vence a las 24 horas sin cambiar el aura. El cron revisa las propuestas cada cinco minutos y marca las vencidas; un voto después del plazo tampoco cuenta aunque el cron aún no haya corrido. El lote de voto comprueba el vencimiento con el reloj de D1 al ejecutarse, antes de guardar el voto y resolver el cierre; si ya venció, no puede aprobarse ni reabrirse. El bot intenta quitar los botones del mensaje original y vuelve a intentarlo si Discord falla. Las propuestas creadas antes de guardar el ID del mensaje pueden quedar con botones visibles si nadie interactuó con ellas; al pulsarlos, el bot muestra que la votación venció.
+
+## Configuración por servidor
+
+`/config ver` muestra de forma privada el rol decisor, los umbrales y el canal de propuestas. Cualquier miembro puede consultarlo. `/config cambiar` exige el permiso Administrar servidor o Administrador, validado en el Worker, y confirma el resultado de forma privada.
+
+Los parámetros opcionales son `rol`, `normal`, `imponerse`, `canal` y `canal_libre`. El rol debe ser una selección resuelta por Discord, distinta de @everyone. Los umbrales son enteros entre 1 y 100 y `imponerse` debe ser igual o mayor que `normal`. No se permite combinar `canal` con `canal_libre:true`; esta última opción elimina la restricción. Se conserva lo que no se indique. Se exige al menos un cambio y un rol para activar un servidor nuevo.
+
+El canal elegido debe ser de texto o anuncios del mismo servidor. Antes de guardarlo se consultan en Discord el canal, los roles y el miembro bot para calcular sus permisos efectivos, incluyendo sobrescrituras: Ver canal, Enviar mensajes e Insertar enlaces, o Administrador. Si la validación falla no se guarda el cambio. La configuración requiere acceso a Discord cuando hay un canal restringido.
+
+Cada servidor guarda sus valores en `guild_config`. Dos ediciones con la misma versión no se sobrescriben: la segunda recibe un aviso para volver a consultar. `guild_config_attempts` recuerda los intentos para que una reentrega no revierta una edición posterior.
+
+Cada propuesta guarda su rol y umbrales en `proposal_rules` dentro del lote de creación. El INSERT comprueba el canal y el rol activos en ese mismo lote, por lo que un cambio concurrente no permite saltar la restricción. Votar, explicar el cierre y actualizar el mensaje usa esas reglas fijas, incluso si cambia `/config`. Las propuestas anteriores siguen en su canal original y se pueden votar o cancelar allí.
+
+La migración crea las tablas sin borrar datos. Las propuestas heredadas conservan el rol `1431791263547392121` y los umbrales 4/6. Los servidores con propuestas existentes heredan esos mismos valores una sola vez, sin canal restringido; la marca `guild_config_v1` impide configurar automáticamente a servidores futuros. Un servidor nuevo muestra 4/6 como valores sugeridos y bloquea `/aura` hasta elegir un rol. `/info` muestra las reglas vigentes de su servidor; cada embed conserva las de su propia propuesta.
 
 ## Propuestas duplicadas
 
@@ -26,9 +40,9 @@ La preparación solicita una sola vez actualizar los mensajes abiertos anteriore
 
 ## Respuestas a interacciones
 
-Después de verificar la firma, `/aura`, `/perfil`, `/historial`, `/votaciones` y `/ranking` reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` responde directamente porque no consulta la base. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.
+Después de verificar la firma, `/aura`, `/perfil`, `/historial`, `/votaciones`, `/ranking`, `/config` y `/info` en servidores reconocen la interacción de inmediato con una respuesta diferida, antes de acceder a D1. El resultado completa la respuesta original en segundo plano. `/info` en mensajes directos conserva una guía general sin consultar la base. En un servidor consulta la configuración con respuesta diferida. `/config` difiere con visibilidad efímera, también cuando luego hay un error. Los errores de entrada que se detectan sin D1 siguen siendo efímeros; los errores posteriores de un comando se muestran en su respuesta diferida pública. Los botones válidos se reconocen antes de consultar D1 y los errores de voto se informan mediante un aviso efímero, sin reemplazar la votación.
 
-La preparación de tablas y la migración de votos se comparten una vez por binding de D1 en cada instancia del Worker, antes de las escrituras. Un fallo permite reintentar la preparación. Las consultas de perfil e historial no esperan esta migración.
+La preparación de tablas y la migración de votos se comparten una vez por binding de D1 en cada instancia del Worker, antes de las escrituras. Un fallo permite reintentar la preparación. Las consultas de perfil e historial no esperan esta migración; `/info` y `/config` sí necesitan la preparación de configuración en segundo plano.
 
 La propuesta usa el ID de la interacción de creación; una entrega repetida de la misma interacción conserva una única propuesta. D1 guarda los IDs de votos procesados en `vote_interactions` dentro del mismo lote que el voto: repetir una entrega no vuelve a aplicarla ni deshace un cambio posterior de voto o de rol. Ejecutar un comando nuevo con otro ID intenta crear otra propuesta, sujeta a la comprobación de duplicados abiertos.
 
@@ -63,3 +77,15 @@ Los límites y comprobaciones conocidos están en [`QUALITY.md`](../../QUALITY.m
 ## Diagnóstico operativo
 
 `/health` devuelve únicamente `{"status":"ok"}`; confirma la respuesta HTTP del Worker sin publicar configuración ni consultar D1. Los logs de aplicación usan eventos JSON con área (`d1`, `discord`, `validation`, `config` o `worker`), códigos fijos y estado HTTP cuando corresponde. No incluyen errores crudos, URLs, tokens, motivos ni IDs. El registro de comandos distingue alta correcta, lista ya actualizada, falta de token y errores. La [guía de operación](../operations/cloudflare.md) explica los códigos y cómo recuperar el servicio. Las invocaciones automáticas no se registran en la configuración de observabilidad; sí los eventos de aplicación.
+
+## Panel de administración
+
+`/moderar` es exclusivo de personas con Administrador, comprobado por el permiso 8 en cada solicitud y oculto por defecto al resto en el registro del comando. Administrar servidor por sí solo permite configurar el bot, pero no usar este panel. El panel se limita al servidor de la interacción y difiere todas sus respuestas como efímeras.
+
+Incluye `listar` (filtros de destinatario y estado), `inspeccionar`, `cancelar`, `sincronizar` y `acciones` (auditoría por propuesta opcional). Listas y auditoría se paginan de a ocho con orden estable y límites de Discord. Las consultas muestran como vencidas las abiertas cuyo plazo ya pasó, sin escribir su estado; la inspección aclara el estado guardado si aún está pendiente el cron. Los IDs se pueden copiar desde el panel. La inspección no incluye los botones públicos de votación.
+
+Cancelar permite a un administrador retirar una propuesta ajena abierta y sin vencer, sin modificar puntos ni borrar votos. Exige motivo y `confirmar:true`; si se omite la confirmación, devuelve una vista previa sin aplicar la acción. El lote de D1 guarda auditoría y cambio de estado de forma atómica; una carrera con el voto decisivo conserva la primera transición confirmada. No se puede cancelar una aprobada para revertir sus puntos en esta versión.
+
+Sincronizar también exige confirmación y registra que se solicitó actualizar el mensaje, no que Discord lo haya entregado. Usa el sincronizador por propuesta y sus reintentos; no cambia votos ni reenvía avisos de cierre. Requiere un ID de mensaje original conocido.
+
+`admin_actions` conserva un registro por interacción con servidor, propuesta, administrador, acción, motivo, fecha y estados. Reentregar una acción no duplica el registro ni su cambio. El motivo administrativo se muestra solo a administradores en la auditoría, no en el mensaje público ni en los logs. Ajustar puntos por la fuerza y retirar propuestas aprobadas del historial corresponde a B10-020. La [guía del panel](../operations/moderation.md) contiene ejemplos.

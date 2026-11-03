@@ -14,6 +14,8 @@ export class LocalD1 {
   constructor(legacy = false) {
     this.db = new DatabaseSync(':memory:');
     this.db.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
+    // Explicit fixture configuration for the servers used by existing tests.
+    for (const guild of ['guild-1', 'guild-2', 'guild']) this.db.prepare('INSERT INTO guild_config(guild_id, voter_role_id, votes_to_close, votes_to_override) VALUES (?, ?, ?, ?)').run(guild, '1431791263547392121', 4, 6);
     if (legacy) this.db.exec('DROP TABLE role_votes; DROP TABLE bot_settings;');
   }
   prepare(sql) { return new D1Statement(this.db, sql); }

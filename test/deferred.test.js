@@ -234,3 +234,28 @@ test('ranking reconoce antes de D1 lento y completa la respuesta sin migrar tabl
   assert.equal(delivered[0].method, 'PATCH');
   assert.match(delivered[0].body.embeds[0].title, /Ranking de aura/);
 });
+
+test('Ver votos reconoce con defer privado antes de D1 lento y responde sin editar la propuesta', async (t) => {
+  const { env, DB, delivered } = setup(t);
+  seed(DB);
+  DB.db.exec("INSERT INTO votes VALUES ('proposal','someone','yes')");
+  const gate = barrier();
+  const prepare = DB.prepare.bind(DB);
+  DB.prepare = sql => {
+    const statement = prepare(sql);
+    if (sql.includes('WITH visible AS')) {
+      const all = statement.all.bind(statement);
+      statement.all = async () => { await gate.promise; return all(); };
+    }
+    return statement;
+  };
+  const attempt = await start(env, { type: 3, data: { custom_id: 'ballot:proposal:1' } });
+  assert.deepEqual(attempt.initial, { type: 5, data: { flags: 64 } });
+  assert.equal(delivered.length,0);
+  gate.release(); await attempt.flush();
+  assert.equal(delivered.length,1);
+  assert.ok(delivered[0].url.endsWith(`/webhooks/1417570023370653836/${attempt.interaction.token}/messages/@original`));
+  assert.match(delivered[0].body.embeds[0].description,/<@someone> · 👍 Aprobar/);
+  assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id='proposal'").get().status,'open');
+  assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_message_sync').get().n,0);
+});

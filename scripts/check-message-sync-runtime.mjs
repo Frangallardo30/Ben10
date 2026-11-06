@@ -78,7 +78,7 @@ try {
   assert.equal(maxActive, 1);
   assert.equal(edits.length, 2);
   assert.notDeepEqual(edits[0].components, []);
-  assert.deepEqual(edits[1].components, []);
+  assert.deepEqual(edits[1].components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   assert.equal(edits[1].embeds[0].fields[0].value, '👍 4 · 👎 0');
   assert.match(edits[1].embeds[0].fields[2].value, /Aprobada/);
   const state = await db.prepare('SELECT revision, synced_revision FROM proposal_message_sync').first();

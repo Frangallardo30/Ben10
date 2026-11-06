@@ -13,6 +13,7 @@ export function display(proposal, votes) {
       description: `<@${proposal.target_id}> · Ajuste aplicado por administración, sin votación.`,
       color: 0x747f8d, fields: [{ name: 'Estado', value: 'Aplicado' }] }], components: []
   };
+  const viewVotes = { type: 2, style: 2, label: 'Ver votos', custom_id: `ballot:${proposal.id}:1` };
   const closed = proposal.status !== 'open';
   const normal = proposal.votes_to_close ?? VOTES_TO_CLOSE;
   const override = proposal.votes_to_override ?? VOTES_TO_OVERRIDE;
@@ -52,10 +53,11 @@ export function display(proposal, votes) {
       ],
       footer: { text: 'Una persona, un voto. Quien propone y quien recibe no votan.' }
     }],
-    components: closed ? [] : [{ type: 1, components: [
+    components: [{ type: 1, components: closed ? [viewVotes] : [
       { type: 2, style: 3, label: 'Aprobar', emoji: { name: '👍' }, custom_id: `aura:yes:${proposal.id}` },
       { type: 2, style: 4, label: 'Desaprobar', emoji: { name: '👎' }, custom_id: `aura:no:${proposal.id}` },
-      { type: 2, style: 2, label: 'Cancelar propuesta', custom_id: `aura:cancel:${proposal.id}` }
+      { type: 2, style: 2, label: 'Cancelar propuesta', custom_id: `aura:cancel:${proposal.id}` },
+      viewVotes
     ] }]
   };
 }

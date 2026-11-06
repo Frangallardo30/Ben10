@@ -16,7 +16,7 @@ El comando `/moderar` exige el permiso **Administrador** (no alcanza Administrar
 | `/moderar operacion codigo:...` | Consulta selección, efecto, motivo y resultado de una operación del servidor. |
 | `/moderar acciones` | Consulta la auditoría del servidor, ocho acciones por página. Permite filtrar por ID de propuesta. |
 
-Copiá el ID desde la lista o la inspección. Antes de confirmar, revisá destinatario y estado. Ajustar y anular requieren una vista previa y una confirmación propias. Cancelar una abierta conserva sus votos, retira sus botones y no afecta al aura. Si otra persona termina la votación primero, la cancelación no revierte el resultado.
+Copiá el ID desde la lista o la inspección. Antes de confirmar, revisá destinatario y estado. Ajustar y anular requieren una vista previa y una confirmación propias. Cancelar una abierta conserva sus votos, retira sus botones para votar/cancelar, conserva Ver votos y no afecta al aura. Si otra persona termina la votación primero, la cancelación no revierte el resultado.
 
 Las cancelaciones exitosas y las solicitudes de sincronización se guardan en `admin_actions` con actor, fecha, motivo y estados. Las vistas previas de ajustes y anulaciones se conservan en `admin_operations`; solo las aplicadas aparecen en `/moderar acciones`. La auditoría no está disponible para miembros sin Administrador ni se comparte entre servidores. El motivo administrativo permanece en esta vista privada y no se añade al mensaje público ni a los logs.
 

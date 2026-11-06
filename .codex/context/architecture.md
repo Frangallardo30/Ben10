@@ -11,6 +11,7 @@
 - `src/proposal-dates.js`: migración idempotente de created_at y lectura compatible de fechas heredadas.
 - `src/database.js`: preparación compartida por binding de D1, migración e IDs de interacciones de voto procesadas.
 - `src/message-sync.js`: cola de revisiones en D1 y Durable Object por propuesta para serializar ediciones del mensaje; incluye reintentos por cron.
+- `src/vote-list.js`: consulta consistente y paginada de votantes y opciones, privada y aislada por servidor, sin escrituras.
 - `src/presentation.js`: contenido del embed a partir de una instantánea consistente del estado y los recuentos.
 - `src/commands.js`: definición de comandos slash.
 - `src/voting.js`: reglas y consultas de voto/cierre.

@@ -62,7 +62,7 @@ test('una edición abierta demorada termina antes del cierre y no restaura boton
     assert.equal(maxActive, 1);
     assert.equal(edits.length, 2);
     assert.notDeepEqual(edits[0].components, []);
-    assert.deepEqual(edits[1].components, []);
+    assert.deepEqual(edits[1].components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.equal(edits[1].embeds[0].fields[0].value, '👍 4 · 👎 0');
     assert.match(edits[1].embeds[0].fields[2].value, /Aprobada/);
     assert.deepEqual(edits[1].allowed_mentions, { parse: [] });
@@ -70,7 +70,7 @@ test('una edición abierta demorada termina antes del cierre y no restaura boton
     // A late vote or delayed synchronization request cannot reopen the proposal.
     await cast(env, 'late', 'no');
     await requestMessageSync(env, 'proposal');
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.equal(edits.at(-1).embeds[0].fields[0].value, '👍 4 · 👎 0');
   } finally {
     releaseFirst.resolve();
@@ -94,7 +94,7 @@ test('un fallo conserva la revisión pendiente y otra instancia recupera el esta
     await retryMessageSync(env);
     assert.equal(edits.length, 2);
     assert.match(edits[1].embeds[0].fields[2].value, /Rechazada/);
-    assert.deepEqual(edits[1].components, []);
+    assert.deepEqual(edits[1].components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.equal(syncState(env).revision, syncState(env).synced_revision);
   } finally { env.DB.close(); }
 });

@@ -1,3 +1,4 @@
+import { parseVoteList, voteList } from './vote-list.js';
 import { administrativeExpression, confirmOperation } from './admin-operations.js';
 import { isAdministrator, moderate } from './moderation.js';
 import { canManageGuild, getGuildConfig, changeGuildConfig, configSummary } from './guild-config.js';
@@ -149,6 +150,7 @@ async function command(interaction, env, ctx) {
           { name: '🏆 /ranking', value: 'Muestra las 10 personas con más aura de este servidor. Solo cuentan los cambios aprobados; los empates comparten puesto.', inline: false },
           ...(isAdministrator(interaction) ? [{ name: '🛡️ /moderar', value: 'Panel privado: listar, inspeccionar, cancelar abiertas, sincronizar mensajes y consultar auditoría. Cancelar/sincronizar requiere confirmar:true. Ajustar y anular usan una vista previa con confirmación ligada a su selección.', inline: false }] : []),
           { name: '⚙️ /config', value: 'Ver reglas del servidor o cambiarlas con Administrar servidor. Los cambios solo afectan propuestas nuevas.', inline: false },
+          { name: '🗳️ Ver votos', value: 'El botón Ver votos muestra quién eligió aprobar o rechazar. Disponible durante la votación y después del cierre, en una lista privada de 20 personas por página.', inline: false },
           { name: '👍 👎 Cómo se vota', value: `Todos pueden votar una vez y cambiar su voto mientras la propuesta esté abierta. Quien propone y quien recibe el aura no pueden votar. Quien creó la propuesta puede cancelarla mientras esté abierta, sin cambiar el aura. ${rules?.voter_role_id ? `Los votos del rol <@&${rules.voter_role_id}> cierran con ${rules.votes_to_close} iguales si esa opción empata o lidera; si va perdiendo, necesita ${rules.votes_to_override}.` : 'Un administrador debe configurar el rol decisor con /config cambiar antes de crear propuestas.'} ${rules?.channel_id ? `Canal de propuestas nuevas: <#${rules.channel_id}>.` : 'Se permiten propuestas en cualquier canal habilitado para el bot.'} Si no se alcanza el cierre, vence a las 24 horas sin cambiar el aura.`, inline: false }
         ],
         footer: { text: 'El aura incluye propuestas aprobadas y ajustes administrativos confirmados.' }
@@ -363,6 +365,10 @@ async function cancelProposal(interaction, env, ctx) {
 
 async function performInteraction(interaction, env, ctx) {
   const isCommand = interaction.type === 2;
+  if (!isCommand && interaction.data.custom_id?.startsWith('ballot:')) {
+    await editDeferred(interaction, env, await voteList(interaction, env.DB));
+    return;
+  }
   if (!isCommand && interaction.data.custom_id?.startsWith('admin:')) {
     const [, action, id] = interaction.data.custom_id.split(':');
     await prepareWrites(env.DB);
@@ -407,11 +413,11 @@ async function finishInteraction(interaction, env, ctx) {
     reportFailure('INTERACTION_FAILED', error);
     const configChange = isCommand && interaction.data.name === 'config' && interaction.data.options?.[0]?.name === 'cambiar';
     const adminChange = isCommand && interaction.data.name === 'moderar' && ['cancelar', 'sincronizar', 'confirmar'].includes(interaction.data.options?.[0]?.name) || interaction.data?.custom_id?.startsWith('admin:');
-    const message = adminChange ? 'No pude confirmar la acción. Consultá /moderar acciones antes de volver a intentarlo.' : configChange ? 'No pude confirmar la configuración. Consultá /config ver antes de volver a intentarlo.' : isCommand && interaction.data.name !== 'aura'
+    const message = adminChange ? 'No pude confirmar la acción. Consultá /moderar acciones antes de volver a intentarlo.' : configChange ? 'No pude confirmar la configuración. Consultá /config ver antes de volver a intentarlo.' : (interaction.data?.custom_id?.startsWith('ballot:') || isCommand && interaction.data.name !== 'aura')
       ? 'No pude consultar los datos. Intentá de nuevo en unos segundos.'
       : 'No pude confirmar la operación. Consultá /perfil antes de volver a intentarlo.';
     try {
-      if (isCommand) await editDeferred(interaction, env, { content: message, embeds: [], components: [] });
+      if (isCommand || interaction.data?.custom_id?.startsWith('ballot:')) await editDeferred(interaction, env, { content: message, embeds: [], components: [] });
       else await deferredButtonError(interaction, env, message);
     } catch (deliveryError) { reportFailure('INTERACTION_ERROR_DELIVERY_FAILED', deliveryError); }
   }
@@ -423,7 +429,8 @@ function deferInteraction(interaction, env, ctx) {
     return ephemeral('La interacción no tiene los datos necesarios. Intentá de nuevo.');
   }
   ctx.waitUntil(Promise.resolve().then(() => finishInteraction(interaction, env, ctx)));
-  return reply({ type: interaction.type === 2 ? 5 : 6, ...(['config', 'moderar'].includes(interaction.data?.name) ? { data: { flags: 64 } } : {}) });
+  const voteRead = interaction.type === 3 && interaction.data?.custom_id?.startsWith('ballot:');
+  return reply({ type: interaction.type === 2 || voteRead ? 5 : 6, ...((voteRead || ['config', 'moderar'].includes(interaction.data?.name)) ? { data: { flags: 64 } } : {}) });
 }
 
 export default {
@@ -462,6 +469,10 @@ export default {
             return ephemeral('Usá de -1000 a 1000 puntos (excepto 0) y un motivo de hasta 250 caracteres.');
           }
         }
+        return deferInteraction(interaction, env, ctx);
+      }
+      if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('ballot:')) {
+        if (!interaction.guild_id || !parseVoteList(interaction.data.custom_id)) return ephemeral('Usá Ver votos desde una propuesta de este servidor.');
         return deferInteraction(interaction, env, ctx);
       }
       if (interaction.type === 3 && interaction.data?.custom_id?.startsWith('admin:')) {

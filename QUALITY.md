@@ -9,6 +9,7 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 - Votos de miembros con y sin el rol; un voto por persona y cambio de voto.
 - Cierre con cuatro votos del rol cuando esa opción empata o lidera, y con seis cuando va perdiendo, en ambos sentidos.
 - Bloqueo de nuevos votos después del cierre y separación por servidor.
+- Consulta de identidad/opción actual de votos, paginación, vacíos, lectura privada sin cambios públicos, validación de IDs/páginas, aislamiento de servidores, exclusión de anuladas/ajustes y actualización de mensajes históricos una sola vez.
 - Panel exclusivo de Administrador, respuestas efímeras, confirmación, auditoría por servidor, rollback, reentregas y carreras entre cancelación administrativa y voto decisivo.
 - Ajustes positivos/negativos confirmados, selección individual/múltiple/última congelada, exclusión pública coherente, permisos actuales y propiedad, vencimiento, descarte, rollback, confirmaciones repetidas/concurrentes y neutralización de avisos en vuelo.
 - Configuración privada por servidor, permisos Administrar servidor/Administrador, límites y ediciones concurrentes, permisos efectivos del canal y reglas de propuestas inmutables tras cambios.
@@ -24,9 +25,9 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 
 `npx wrangler deploy --dry-run` comprueba que el Worker se empaqueta con sus bindings. El flujo de GitHub Actions `Check Ben10Bot` ejecuta las pruebas de Node.js, los tres scripts de runtime descritos abajo y el empaquetado en cada push y pull request.
 
-`node scripts/check-message-sync-runtime.mjs` ejecuta una prueba adicional con workerd, D1 y el Durable Object locales usando las dependencias fijadas de Wrangler. Retiene una edición abierta mientras llega el cierre y verifica que solo haya una edición en vuelo y que la última retire los botones. Discord está simulado y no se hacen solicitudes remotas.
+`node scripts/check-message-sync-runtime.mjs` ejecuta una prueba adicional con workerd, D1 y el Durable Object locales usando las dependencias fijadas de Wrangler. Retiene una edición abierta mientras llega el cierre y verifica que solo haya una edición en vuelo y que la última retire los botones para votar y conserve Ver votos. Discord está simulado y no se hacen solicitudes remotas.
 
-`node scripts/check-deferred-runtime.mjs` comprueba con workerd, D1 y webhooks simulados el PING firmado y el rechazo de firmas inválidas, el flujo completo de propuesta/votos/perfil/ranking/votaciones con los bindings locales, el reconocimiento diferido, la publicación del resultado, la reentrega de propuestas y votos, la cancelación de una propuesta abierta y ajustes/anulaciones confirmados con botones privados y una respuesta de error ante un fallo real de SQL en D1 local.
+`node scripts/check-deferred-runtime.mjs` comprueba con workerd, D1 y webhooks simulados el PING firmado y el rechazo de firmas inválidas, el flujo completo de propuesta/votos/perfil/ranking/votaciones con los bindings locales, el reconocimiento diferido, la publicación del resultado, la reentrega de propuestas y votos, la cancelación de una propuesta abierta y ajustes/anulaciones confirmados con botones privados la consulta privada de votantes/opciones en una propuesta cerrada con aislamiento de servidor y una respuesta de error ante un fallo real de SQL en D1 local.
 
 `node scripts/check-proposal-dates-runtime.mjs` ejecuta dos instancias de Worker sobre una base D1 local heredada, comprueba la migración concurrente y repetida y conserva el orden y las fechas aunque se modifique el vencimiento. Usa datos representativos locales; no accede a producción.
 
@@ -37,8 +38,8 @@ Con Node.js 24 o posterior, ejecutá `npm ci && npm test`. Las pruebas cubren:
 3. Creá una propuesta de aura propia y comprobá que no puedas votarla.
 4. Hacé votar a una persona sin el rol: debe aparecer en el total, sin sumarse al recuento del rol.
 5. Con reglas 4/6, probá cuatro votos del rol del lado que empata o lidera y, en otra propuesta, seis del lado que va perdiendo. Si configuraste otros umbrales, usá los que muestra cada propuesta.
-6. Comprobá que los botones desaparezcan al cerrar y que `/perfil` e `/historial` reflejen solo las propuestas aprobadas.
-7. Probá que solo quien creó la propuesta pueda usar **Cancelar propuesta**: debe mostrar «Cancelada», retirar todos los botones y conservar el aura e historial aprobados.
+6. Comprobá que al cerrar desaparezcan los botones para votar y quede Ver votos y que `/perfil` e `/historial` reflejen solo las propuestas aprobadas.
+7. Probá que solo quien creó la propuesta pueda usar **Cancelar propuesta**: debe mostrar «Cancelada», conservar solo Ver votos y mantener el aura e historial aprobados.
 8. Con dos miembros votando casi al mismo tiempo, comprobá que el mensaje termine con los recuentos guardados y que ningún voto tardío restaure los botones. Verificá que el Worker tenga el binding `MESSAGE_SYNC` y el secreto `DISCORD_BOT_TOKEN`.
 
 La [guía de operación en Cloudflare](docs/operations/cloudflare.md) describe los códigos de diagnóstico, el alcance de `/health` y la recuperación tras rotar el token.
@@ -54,3 +55,5 @@ Para la moderación, comprobá que Administrar servidor sin Administrador no hab
 - Las pruebas locales usan SQLite y respuestas firmadas simuladas. No sustituyen la prueba manual de permisos, latencia y aspecto de los embeds en Discord y Cloudflare.
 - Los comandos y botones reconocen la interacción antes de D1; el trabajo se completa en segundo plano. Tras veinte segundos se informa un resultado incierto y una escritura ya enviada podría terminar después. Esto no evita problemas de latencia de red, verificación de firma, fallos de webhooks o límites de ejecución de Cloudflare.
 - Los votos no editan el embed desde sus respuestas. Las ediciones se serializan por propuesta mediante un Durable Object y las revisiones pendientes se reintentan por cron. Mientras falte el token, el ID original o el acceso a Discord, el mensaje puede quedar desactualizado; D1 mantiene los votos y el resultado. Un 404 no recrea un mensaje eliminado.
+
+Para **Ver votos**, abrí una propuesta con miembros que hayan votado en ambos sentidos. Verificá nombres y opciones, cambiá un voto abierto y volvé a consultar: debe aparecer solo la opción nueva. Probá Anterior/Siguiente con más de veinte votos. Cerrá la propuesta y comprobá que solo permanezca Ver votos y siga funcionando. La lista debe ser visible solo para quien la abre. En mensajes históricos conocidos, esperá al cron o solicitá sincronizar desde el panel; la actualización puede tardar varias ejecuciones si hay más de veinte pendientes. Anular la propuesta debe impedir consultas nuevas de sus votos.

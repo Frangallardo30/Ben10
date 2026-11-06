@@ -97,7 +97,7 @@ try {
   await until(() => messageEdits().length > beforeCancel);
   assert.equal((await db.prepare('SELECT status FROM proposals').first()).status, 'cancelled');
   assert.match(messageEdits().at(-1).body.embeds[0].fields[2].value, /Cancelada/);
-  assert.deepEqual(messageEdits().at(-1).body.components, []);
+  assert.deepEqual(messageEdits().at(-1).body.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').first()).n, 0);
   const approval = { ...aura, id: '100010', token: 'runtime-approval' };
   assert.deepEqual(await dispatch(approval), { type: 5 });
@@ -110,7 +110,7 @@ try {
     await until(() => messageEdits().length > previous);
   }
   assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100010').first()).status, 'approved');
-  assert.deepEqual(messageEdits().at(-1).body.components, []);
+  assert.deepEqual(messageEdits().at(-1).body.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   assert.equal(messageEdits().at(-1).body.embeds[0].fields[0].value, '👍 4 · 👎 0');
   assert.equal(messageEdits().at(-1).body.embeds[0].fields[1].value, '👍 4 · 👎 0');
   assert.deepEqual(await dispatch({ id: '100020', token: 'runtime-profile', type: 2,
@@ -190,7 +190,7 @@ try {
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 0);
   const adminCancel = panel('100063', 'cancelar', { ...cancelValues, confirmar: true });
   assert.deepEqual(await dispatch(adminCancel), { type: 5, data: { flags: 64 } });
-  await until(() => messageEdits().some((event) => event.body.embeds[0].description.includes('Admin cancellation') && event.body.components.length === 0));
+  await until(() => messageEdits().some((event) => event.body.embeds[0].description.includes('Admin cancellation') && event.body.components.flatMap(row => row.components).every(button => button.custom_id.startsWith('ballot:'))));
   assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind('100060').first()).status, 'cancelled');
   assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM admin_actions').first()).n, 1);
   assert.equal((await db.prepare('SELECT SUM(amount) AS n FROM proposals WHERE status = ?').bind('approved').first()).n, 200);
@@ -226,6 +226,21 @@ try {
   assert.equal((await db.prepare('SELECT status FROM proposals WHERE id = ?').bind(`admin-${correctionCode}`).first()).status, 'voided');
   assert.equal((await db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status = 'approved'").first()).n, 200);
   assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM admin_operations WHERE status = 'applied'").first()).n, 2);
+  // Read identities and choices from a closed proposal without public edits.
+  const publicEditsBeforeList = messageEdits().length;
+  const votesBeforeList = await db.prepare('SELECT COUNT(*) AS n FROM votes').first();
+  const listInput = { id: '100080', token: 'runtime-vote-list', type: 3,
+    member: { user: { id: 'ordinary-reader' } }, data: { custom_id: 'ballot:100010:1' } };
+  assert.deepEqual(await dispatch(listInput), { type: 5, data: { flags: 64 } });
+  await until(() => events.some(event => event.url.includes('runtime-vote-list') && event.body?.embeds?.[0]?.title.includes('Quién votó')));
+  const listBody = events.find(event => event.url.includes('runtime-vote-list') && event.body?.embeds?.[0]).body;
+  assert.match(listBody.embeds[0].description, /<@/);
+  assert.match(listBody.embeds[0].description, /👍 Aprobar/);
+  assert.deepEqual(listBody.allowed_mentions, { parse: [] });
+  assert.equal(messageEdits().length, publicEditsBeforeList);
+  assert.deepEqual(await db.prepare('SELECT COUNT(*) AS n FROM votes').first(), votesBeforeList);
+  assert.deepEqual(await dispatch({ ...listInput, id: '100081', token: 'runtime-vote-list-foreign', guild_id: 'foreign-guild' }), { type: 5, data: { flags: 64 } });
+  await until(() => events.some(event => event.url.includes('runtime-vote-list-foreign') && event.body?.content?.includes('no está disponible')));
   await db.prepare('DROP TABLE proposals').run();
   assert.deepEqual(await dispatch({ id: '100004', token: 'runtime-failed', type: 2, member: { user: { id: 'voter' } }, data: { name: 'perfil' } }), { type: 5 });
   await until(() => events.some((event) => event.url.includes('runtime-failed') && event.body?.content?.includes('No pude consultar')));

@@ -84,7 +84,7 @@ test('flujo completo: migra D1, propuesta propia, voto del rol, perfil e histori
       if (i === 3) {
         assert.match(result.data.embeds[0].fields[2].value, /Aprobada/);
         assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').get().n, 1);
-        assert.deepEqual(result.data.components, []);
+        assert.deepEqual(result.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
       }
     }
 
@@ -117,12 +117,12 @@ test('un voto cuyo lote llega después del plazo no aprueba ni suma aura', async
     const result = await voteAndView(env, { ...base('fourth', true), type: 3, data: { custom_id: 'aura:yes:expires' } });
     assert.equal(result.type, 6);
     assert.match(result.data.embeds[0].fields[2].value, /Vencida/);
-    assert.deepEqual(result.data.components, []);
+    assert.deepEqual(result.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.equal(DB.db.prepare("SELECT status FROM proposals WHERE id = 'expires'").get().status, 'expired');
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 3);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM role_votes').get().n, 3);
     const again = await voteAndView(env, { ...base('fourth', true), type: 3, data: { custom_id: 'aura:yes:expires' } });
-    assert.deepEqual(again.data.components, []);
+    assert.deepEqual(again.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     const profile = await interaction(env, { ...base('fran'), type: 2, data: { name: 'perfil', options: [] } });
     assert.match(profile.data.embeds[0].description, /0 puntos/);
     assert.equal(profile.data.embeds[0].fields[0].value, '0');
@@ -142,6 +142,7 @@ test('el cron caduca solo abiertas vencidas y reintenta quitar botones', async (
     ['future', now + 3600, 'open', '456'], ['approved', now - 1, 'approved', '789']
   ]) insert.run(id, 'guild-1', 'channel-1', message, 'fran', 'other', 100, 'Motivo', deadline, status);
   const patches = [];
+  DB.db.exec("INSERT INTO bot_settings(key,value) VALUES ('vote_list_button_v1','ready')");
   mockDiscord(t, async (_url, options) => {
     if (options.method === 'PUT') return Response.json([]);
     if (options.method === 'GET') return Response.json([]);
@@ -164,11 +165,11 @@ test('el cron caduca solo abiertas vencidas y reintenta quitar botones', async (
     assert.equal(expiredPatches.length, 2);
     assert.ok(patches.some((body) => body.components[0]?.components.some((button) => button.label === 'Cancelar propuesta')));
     for (const body of expiredPatches) {
-      assert.deepEqual(body.components, []);
+      assert.deepEqual(body.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
       assert.match(body.embeds[0].fields[2].value, /Vencida/);
     }
     const late = await voteAndView(env, { ...base('late', true), type: 3, data: { custom_id: 'aura:yes:due' } });
-    assert.deepEqual(late.data.components, []);
+    assert.deepEqual(late.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0);
   } finally { DB.close(); }
 });
@@ -197,7 +198,7 @@ for (const choice of ['yes', 'no']) {
         assert.match(result.data.embeds[0].fields[2].value, threshold === 4 ? /empata/ : /incluso si va perdiendo/);
         assert.equal(result.data.embeds[0].fields[0].value, choice === 'yes' ? `👍 ${threshold} · 👎 ${against}` : `👍 ${against} · 👎 ${threshold}`);
         assert.equal(result.data.embeds[0].fields[1].value, choice === 'yes' ? `👍 ${threshold} · 👎 0` : `👍 0 · 👎 ${threshold}`);
-        assert.deepEqual(result.data.components, []);
+        assert.deepEqual(result.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
       } finally { DB.close(); }
     });
   }
@@ -233,7 +234,7 @@ test('un voto en curso refleja el rechazo guardado por otro voto que cierra prim
     assert.match(result.data.embeds[0].fields[2].value, /Rechazada\nRegla de 4 votos del rol en contra: lidera/);
     assert.equal(result.data.embeds[0].fields[0].value, '👍 0 · 👎 4');
     assert.equal(result.data.embeds[0].fields[1].value, '👍 0 · 👎 4');
-    assert.deepEqual(result.data.components, []);
+    assert.deepEqual(result.data.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   } finally { DB.close(); }
 });
 
@@ -379,7 +380,7 @@ test('votos simultáneos del mismo usuario y cierre: ACKs sin ediciones y una so
     assert.ok(edits.length >= 1);
     assert.match(edits.at(-1).embeds[0].fields[2].value, /Aprobada/);
     assert.equal(edits.at(-1).embeds[0].fields[0].value, '👍 4 · 👎 0');
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   } finally { DB.close(); }
 });
 
@@ -426,7 +427,7 @@ test('cancelar actualiza el mensaje, conserva votos e historial y no publica avi
     const cancelled = await interaction(env, { ...base('creator'), type: 3, message: { id: '999123' }, data: { custom_id: cancelId } });
     assert.deepEqual(cancelled, { type: 6 });
     assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada sin cambiar el aura/);
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.deepEqual(edits.at(-1).allowed_mentions, { parse: [] });
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes WHERE proposal_id = ?').get(id).n, 1);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications WHERE proposal_id = ?').get(id).n, 0);
@@ -439,7 +440,7 @@ test('cancelar actualiza el mensaje, conserva votos e historial y no publica avi
     assert.doesNotMatch(history.data.embeds[0].description, /Propuesta retirada/);
     const lateVote = await interaction(env, { ...base('late', true), type: 3, data: { custom_id: voteId } });
     assert.match(lateVote.data.content, /ya cerró/);
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
   } finally { DB.close(); }
 });
 
@@ -498,7 +499,7 @@ for (const winner of ['cancel', 'vote']) {
       const snapshot = await readProposalMessage(DB, id);
       assert.equal(snapshot.proposal.status, winner === 'cancel' ? 'cancelled' : 'approved');
       assert.equal(snapshot.proposal.yes, winner === 'cancel' ? 3 : 4);
-      assert.deepEqual(snapshot.body.components, []);
+      assert.deepEqual(snapshot.body.components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
       assert.match(snapshot.body.embeds[0].fields[2].value, winner === 'cancel' ? /Cancelada/ : /Aprobada/);
       assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications WHERE proposal_id = ?').get(id).n, winner === 'cancel' ? 0 : 1);
     } finally { DB.close(); }
@@ -515,11 +516,11 @@ test('la migración solicita actualizar una sola vez los mensajes abiertos anter
     DB.db.prepare('INSERT INTO proposal_message_sync(proposal_id, revision, synced_revision) VALUES (?, ?, ?)').run('old-open', 1, 1);
     await worker.scheduled({}, env);
     const first = DB.db.prepare('SELECT revision, synced_revision FROM proposal_message_sync').get();
-    assert.equal(first.revision, 2);
+    assert.equal(first.revision, 3);
     assert.equal(first.synced_revision, 1);
     const otherBinding = { prepare: DB.prepare.bind(DB), batch: DB.batch.bind(DB) };
     await worker.scheduled({}, { ...env, DB: otherBinding });
-    assert.equal(DB.db.prepare('SELECT revision FROM proposal_message_sync').get().revision, 2);
+    assert.equal(DB.db.prepare('SELECT revision FROM proposal_message_sync').get().revision, 3);
     assert.ok(DB.db.prepare("SELECT value FROM bot_settings WHERE key = 'cancel_button_v1'").get());
   } finally { DB.close(); }
 });
@@ -1129,7 +1130,7 @@ test('cancelación administrativa exige confirmación y audita el motivo sin pub
     assert.equal(action.reason, values.motivo);
     assert.equal(action.previous_status, 'open');
     assert.equal(action.result_status, 'cancelled');
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada/);
     assert.doesNotMatch(JSON.stringify(edits), /Motivo administrativo privado/);
     await interaction(env, request);
@@ -1218,7 +1219,7 @@ test('sincronizar es privado, confirmado y auditable sin reenviar avisos ni camb
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 1);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM votes').get().n, 0);
     assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_notifications').get().n, 0);
-    assert.deepEqual(edits.at(-1).components, []);
+    assert.deepEqual(edits.at(-1).components.flatMap(row => row.components.map(button => button.label)), ['Ver votos']);
     assert.match(edits.at(-1).embeds[0].fields[2].value, /Cancelada/);
   } finally { DB.close(); }
 });
@@ -1443,5 +1444,106 @@ test('consultas anteriores a la migración administrativa funcionan sin crear ta
     const preview = await interaction(env, adminInput('migration-adjust', 'ajustar', { usuario: 'target', puntos: 10, motivo: 'Migración compatible' }));
     await interaction(env, adminInput('migration-confirm', 'confirmar', { codigo: operationCode(preview) }));
     assert.equal(DB.db.prepare("SELECT SUM(amount) AS n FROM proposals WHERE status='approved'").get().n, 80);
+  } finally { DB.close(); }
+});
+
+const listVotesInput = (id, page = 1, guild = 'guild-1') => ({ ...base('reader'), guild_id: guild, type: 3, data: { custom_id: `ballot:${id}:${page}` } });
+
+test('Ver votos muestra personas y opción actual, se pagina sin publicar ni modificar votos', async (t) => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  let externalCalls = 0;
+  mockDiscord(t, () => { externalCalls++; throw new Error('Unexpected public request'); });
+  try {
+    seedCorrection(DB, 'visible-votes', 100, 'open');
+    for (let i = 0; i < 45; i++) DB.db.prepare('INSERT INTO votes VALUES (?,?,?)').run('visible-votes', `person-${String(i).padStart(2,'0')}`, i % 2 ? 'yes' : 'no');
+    // Simulate changing an existing vote: only the latest choice is displayed.
+    DB.db.exec("UPDATE votes SET choice='yes' WHERE user_id='person-00'");
+    const before = DB.db.prepare('SELECT * FROM votes ORDER BY user_id').all();
+    const pageOne = await interaction(env, listVotesInput('visible-votes'));
+    assert.equal(pageOne.data.flags, 64);
+    assert.match(pageOne.data.embeds[0].description, /<@person-00> · 👍 Aprobar/);
+    assert.match(pageOne.data.embeds[0].description, /Aprobar: \*\*23\*\* · 👎 Rechazar: \*\*22\*\*/);
+    assert.equal((pageOne.data.embeds[0].description.match(/<@/g) ?? []).length, 20);
+    assert.deepEqual(pageOne.data.allowed_mentions, { parse: [] });
+    assert.equal(pageOne.data.components[0].components[0].label, 'Siguiente');
+    const pageTwo = await interaction(env, listVotesInput('visible-votes',2));
+    assert.equal(pageTwo.data.components[0].components.length, 2);
+    assert.match(pageTwo.data.embeds[0].description, /person-20/);
+    assert.doesNotMatch(pageTwo.data.embeds[0].description, /person-19/);
+    const pageThree = await interaction(env, listVotesInput('visible-votes',3));
+    assert.equal((pageThree.data.embeds[0].description.match(/<@/g) ?? []).length, 5);
+    assert.equal(pageThree.data.components[0].components[0].label, 'Anterior');
+    assert.equal(JSON.stringify(pageThree).length < 6000, true);
+    assert.match((await interaction(env,listVotesInput('visible-votes',4))).data.content, /3 página/);
+    assert.deepEqual(DB.db.prepare('SELECT * FROM votes ORDER BY user_id').all(), before);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM proposal_message_sync').get().n, 0);
+    assert.equal(DB.db.prepare('SELECT COUNT(*) AS n FROM admin_actions').get().n, 0);
+    assert.equal(externalCalls, 0);
+  } finally { DB.close(); }
+});
+
+test('Ver votos funciona sin votos y después de cualquier cierre; no expone anuladas ni ajustes', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    for (const status of ['open','approved','rejected','cancelled','expired']) {
+      seedCorrection(DB, `list-${status}`, 10, status);
+      const snapshot = await readProposalMessage(DB, `list-${status}`);
+      const buttons = snapshot.body.components.flatMap(row => row.components);
+      assert.ok(buttons.some(button => button.custom_id === `ballot:list-${status}:1`));
+      if (status !== 'open') assert.equal(buttons.length, 1);
+      const list = await interaction(env,listVotesInput(`list-${status}`));
+      assert.match(list.data.embeds[0].description, /Todavía no hay votos/);
+      assert.deepEqual(list.data.components, []);
+    }
+    seedCorrection(DB,'hidden-void',10,'voided'); seedCorrection(DB,'hidden-adjust',20);
+    DB.db.exec("INSERT INTO admin_adjustments VALUES ('hidden-adjust','op-fixture')");
+    for (const id of ['hidden-void','hidden-adjust','missing']) {
+      const hidden = await interaction(env,listVotesInput(id));
+      assert.equal(hidden.data.flags, 64);
+      assert.match(hidden.data.content, /no está disponible/);
+      if (id !== 'missing') assert.deepEqual((await readProposalMessage(DB,id)).body.components, []);
+    }
+    const foreign = await interaction(env,listVotesInput('list-open',1,'guild-2'));
+    assert.match(foreign.data.content, /no está disponible/);
+  } finally { DB.close(); }
+});
+
+test('Ver votos valida identificadores, página y servidor antes de consultar D1', async () => {
+  const env = { DISCORD_PUBLIC_KEY: publicHex, DB: { prepare() { throw new Error('Must not query D1'); } } };
+  for (const customId of ['ballot:trial:0','ballot:trial:-1','ballot:trial:1.5','ballot:trial:1000001','ballot:trial:01','ballot:trial:1:extra','ballot:bad`id:1']) {
+    const invalid = await interaction(env, { ...listVotesInput('trial'), data: { custom_id: customId } });
+    assert.equal(invalid.data.flags,64);
+    assert.match(invalid.data.content,/Usá Ver votos/);
+  }
+  const dm = await interaction(env, { ...listVotesInput('trial'), guild_id: undefined });
+  assert.equal(dm.data.flags,64);
+});
+
+test('consulta de votos en bases heredadas no prepara tablas y falla de manera privada', async () => {
+  const DB = new LocalD1(); const env = { DB, DISCORD_PUBLIC_KEY: publicHex };
+  try {
+    seedCorrection(DB,'legacy-votes',10);
+    DB.db.exec("INSERT INTO votes VALUES ('legacy-votes','voter','no'); DROP TABLE admin_adjustments");
+    assert.match((await interaction(env,listVotesInput('legacy-votes'))).data.embeds[0].description,/<@voter> · 👎 Rechazar/);
+    assert.equal(DB.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='admin_adjustments'").get().n,0);
+    DB.db.exec('DROP TABLE votes');
+    const failure = await interaction(env,listVotesInput('legacy-votes'));
+    assert.equal(failure.data.flags,64);
+    assert.match(failure.data.content,/No pude consultar/);
+    assert.deepEqual(failure.data.embeds,[]);
+  } finally { DB.close(); }
+});
+
+test('migración agrega Ver votos a mensajes históricos una vez y excluye registros ocultos', async () => {
+  const DB = new LocalD1(); const env = { DB };
+  try {
+    for (const [id,status] of [['history-open','open'],['history-closed','approved'],['history-void','voided'],['history-adjust','approved'],['history-unknown','approved']]) seedCorrection(DB,id,10,status);
+    DB.db.exec("UPDATE proposals SET message_id='123' WHERE id<>'history-unknown'; INSERT INTO admin_adjustments VALUES ('history-adjust','op-history'); INSERT INTO bot_settings VALUES ('cancel_button_v1','ready')");
+    await worker.scheduled({},env);
+    const pending = DB.db.prepare('SELECT proposal_id,revision FROM proposal_message_sync ORDER BY proposal_id').all();
+    assert.deepEqual(pending.map(row=>row.proposal_id), ['history-closed','history-open']);
+    assert.ok(pending.every(row=>row.revision===1));
+    await worker.scheduled({}, { ...env, DB: { prepare: DB.prepare.bind(DB), batch: DB.batch.bind(DB) } });
+    assert.deepEqual(DB.db.prepare('SELECT proposal_id,revision FROM proposal_message_sync ORDER BY proposal_id').all(),pending);
   } finally { DB.close(); }
 });

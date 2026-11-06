@@ -51,7 +51,14 @@ async function prepare(db) {
       SELECT id FROM proposals WHERE status = 'open' AND message_id IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM bot_settings WHERE key = 'cancel_button_v1')
       ON CONFLICT(proposal_id) DO UPDATE SET revision = revision + 1`),
-    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('cancel_button_v1', 'ready')")
+    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('cancel_button_v1', 'ready')"),
+    // Upgrade known historical messages once; the durable queue retries delivery.
+    db.prepare(`INSERT INTO proposal_message_sync(proposal_id)
+      SELECT id FROM proposals WHERE message_id IS NOT NULL AND status <> 'voided'
+        AND NOT EXISTS (SELECT 1 FROM admin_adjustments WHERE proposal_id = proposals.id)
+        AND NOT EXISTS (SELECT 1 FROM bot_settings WHERE key = 'vote_list_button_v1')
+      ON CONFLICT(proposal_id) DO UPDATE SET revision = revision + 1`),
+    db.prepare("INSERT OR IGNORE INTO bot_settings(key, value) VALUES ('vote_list_button_v1', 'ready')")
   ]);
   await migrateGuildConfig(db);
 }
